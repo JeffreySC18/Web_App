@@ -1,7 +1,101 @@
 .App {
   text-align: center;
 }
+body {
+  background: linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%);
+  min-height: 100vh;
+  margin: 0;
+  font-family: 'Segoe UI', Arial, sans-serif;
+}
 
+.auth-container {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+  padding: 32px 24px;
+  max-width: 400px;
+  margin: 60px auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+.auth-header {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.auth-header button {
+  background: #6a82fb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 24px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.auth-header button:disabled {
+  background: #b2b2b2;
+  cursor: default;
+}
+
+form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+input[type="text"], input[type="password"] {
+  width: 80%;
+  padding: 10px;
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 16px;
+  background: #f7f7fa;
+}
+
+button[type="submit"] {
+  background: #6a82fb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 32px;
+  font-size: 18px;
+  margin-top: 10px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(106,130,251,0.15);
+  transition: background 0.2s;
+}
+button[type="submit"]:hover {
+  background: #5a6eea;
+}
+
+.auth-graphic {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80px;
+  height: 80px;
+  background: linear-gradient(135deg, #6a82fb 0%, #fc5c7d 100%);
+  border-radius: 50%;
+  box-shadow: 0 4px 16px rgba(106,130,251,0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-graphic svg {
+  width: 48px;
+  height: 48px;
+  fill: #fff;
+}
 .App-logo {
   height: 40vmin;
   pointer-events: none;

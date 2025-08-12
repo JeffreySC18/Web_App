@@ -24,13 +24,14 @@ function AuthForm({ type, onAuth }) {
 
   return (
     <form onSubmit={handleSubmit}>
-      <h2>{type === 'register' ? 'Register' : 'Login'}</h2>
+      <h2 style={{ marginBottom: 16, color: '#6a82fb' }}>{type === 'register' ? 'Register' : 'Login'}</h2>
       <input
         type="text"
         placeholder="Username"
         value={username}
         onChange={e => setUsername(e.target.value)}
         required
+        autoComplete="username"
       />
       <input
         type="password"
@@ -38,9 +39,10 @@ function AuthForm({ type, onAuth }) {
         value={password}
         onChange={e => setPassword(e.target.value)}
         required
+        autoComplete="current-password"
       />
       <button type="submit">{type === 'register' ? 'Register' : 'Login'}</button>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {error && <p style={{ color: 'red', marginTop: 10 }}>{error}</p>}
     </form>
   );
 }
