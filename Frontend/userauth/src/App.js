@@ -11,6 +11,39 @@ function App() {
     else setShowLogin(true);
   };
 
+  const [recording, setRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [audioURL, setAudioURL] = useState(null);
+  const [chunks, setChunks] = useState([]);
+
+  const startRecording = async () => {
+    setAudioURL(null);
+    setChunks([]);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new window.MediaRecorder(stream);
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) setChunks(prev => [...prev, e.data]);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        setAudioURL(URL.createObjectURL(blob));
+      };
+      setMediaRecorder(recorder);
+      recorder.start();
+      setRecording(true);
+    } catch (err) {
+      alert('Microphone access denied or not available.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder) {
+      mediaRecorder.stop();
+      setRecording(false);
+    }
+  };
+
   if (token) {
     return (
       <div className="auth-container">
@@ -20,6 +53,21 @@ function App() {
         <h1>Welcome!</h1>
         <p>You are logged in.</p>
         <button onClick={() => { setToken(null); setShowLogin(true); }}>Logout</button>
+        <div style={{ marginTop: 32 }}>
+          <button onClick={startRecording} disabled={recording} style={{ marginRight: 10 }}>
+            Add Recording
+          </button>
+          <button onClick={stopRecording} disabled={!recording}>
+            Stop Recording
+          </button>
+        </div>
+        {audioURL && (
+          <div style={{ marginTop: 24 }}>
+            <h3>Your Recording:</h3>
+            <audio controls src={audioURL} />
+            <a href={audioURL} download="recording.webm" style={{ display: 'block', marginTop: 8 }}>Download</a>
+          </div>
+        )}
       </div>
     );
   }
