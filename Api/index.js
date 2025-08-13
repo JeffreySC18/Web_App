@@ -35,49 +35,90 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Register user
+// Register user (now requires email and enforces unique username/email)
 app.post('/register', async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
+  const { username, email, password } = req.body || {};
+  const problems = [];
+  if (typeof username !== 'string' || !username.trim()) problems.push('Username is required');
+  if (typeof email !== 'string' || !email.trim()) problems.push('Email is required');
+  if (typeof password !== 'string' || !password) problems.push('Password is required');
+  const trimmedEmail = (email || '').trim();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (trimmedEmail && !emailRegex.test(trimmedEmail)) problems.push('Email format is invalid');
+  if (username && username.length < 3) problems.push('Username must be at least 3 characters');
+  if (password && password.length < 6) problems.push('Password must be at least 6 characters');
+  if (problems.length) {
+    return res.status(400).json({ error: 'Validation failed', details: problems });
+  }
   try {
+    const normEmail = trimmedEmail.toLowerCase();
     const hash = bcrypt.hashSync(password, 10);
-    // Check if user exists (tolerate not found error)
-    const { data: existing } = await supabase
+    // Existence check (case-insensitive for email)
+    const { data: existingUser, error: existingErr } = await supabase
       .from('users')
-      .select('id')
-      .eq('username', username)
+      .select('id, username, email')
+      .or(`username.eq.${username},email.ilike.${normEmail}`)
       .maybeSingle();
-    if (existing) return res.status(400).json({ error: 'Username already exists' });
+    if (existingErr) {
+      console.error('Existing user check error:', existingErr);
+    }
+    if (existingUser) {
+      const dupMsgs = [];
+      if (existingUser.username === username) dupMsgs.push('Username already taken');
+      if (existingUser.email && existingUser.email.toLowerCase() === normEmail) dupMsgs.push('Email already registered');
+      return res.status(400).json({ error: 'Conflict', details: dupMsgs.length ? dupMsgs : ['User already exists'] });
+    }
     const created_at = new Date().toISOString();
     const { data: inserted, error: insertError } = await supabase
       .from('users')
-      .insert([{ username, password_hash: hash, created_at }])
-      .select('id, username, created_at')
+      .insert([{ username, email: normEmail, password_hash: hash, created_at }])
+      .select('id, username, email, created_at')
       .single();
     if (insertError) {
       console.error('User insert error:', insertError);
-      return res.status(500).json({ error: 'Failed to register user' });
+      // Map common Postgres error codes
+      if (insertError.code === '23505') {
+        // Unique violation – best guess which constraint
+        const msg = insertError.message || '';
+        const dupDetails = [];
+        if (/username/i.test(msg)) dupDetails.push('Username already taken');
+        if (/email/i.test(msg)) dupDetails.push('Email already registered');
+        return res.status(400).json({ error: 'Conflict', details: dupDetails.length ? dupDetails : ['Duplicate value'] });
+      }
+      if (insertError.code === '23502') {
+        return res.status(400).json({ error: 'Missing required field', details: ['A required field was null'] });
+      }
+      return res.status(500).json({ error: 'Registration failed', details: ['Unexpected database error'] });
     }
-    res.json({ success: true, user: inserted });
+    const token = jwt.sign({ id: inserted.id, username: inserted.username, email: inserted.email }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token, user: inserted });
   } catch (e) {
     console.error('Register exception:', e);
-    return res.status(500).json({ error: 'Server error during registration' });
+    return res.status(500).json({ error: 'Server error during registration', details: ['Unhandled exception'] });
   }
 });
 
-// Login user
+// Login user (identifier can be username or email)
 app.post('/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, identifier, password } = req.body;
+  const loginId = identifier || username; // backward compatibility with old client sending 'username'
+  if (!loginId || !password) return res.status(400).json({ error: 'Missing credentials' });
   try {
-    const { data: user, error } = await supabase
+    let query = supabase
       .from('users')
-      .select('id, username, password_hash, created_at')
-      .eq('username', username)
-      .maybeSingle();
-    if (error || !user) return res.status(400).json({ error: 'Invalid credentials' });
+      .select('id, username, email, password_hash, created_at')
+      .limit(1);
+    if (loginId.includes('@')) {
+      query = query.ilike('email', loginId.toLowerCase());
+    } else {
+      query = query.eq('username', loginId);
+    }
+    const { data: users, error } = await query;
+    if (error || !users || users.length === 0) return res.status(400).json({ error: 'Invalid credentials' });
+    const user = users[0];
     if (!bcrypt.compareSync(password, user.password_hash)) return res.status(400).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '1h' });
-    res.json({ token, user: { id: user.id, username: user.username, created_at: user.created_at } });
+    const token = jwt.sign({ id: user.id, username: user.username, email: user.email }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token, user: { id: user.id, username: user.username, email: user.email, created_at: user.created_at } });
   } catch (e) {
     console.error('Login exception:', e);
     return res.status(500).json({ error: 'Server error during login' });
@@ -205,7 +246,7 @@ app.get('/me', authenticateToken, async (req, res) => {
   try {
     const { data: user, error } = await supabase
       .from('users')
-      .select('id, username, created_at')
+      .select('id, username, email, created_at')
       .eq('id', req.user.id)
       .single();
     if (error || !user) return res.status(404).json({ error: 'User not found' });

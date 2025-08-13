@@ -55,15 +55,15 @@ function RecordingItem({ rec, token, onRename, onDelete }) {
   {/* Use direct public Supabase storage URL saved in recording metadata */}
   <audio controls src={rec.audio_url} style={{ width: 180 }} />
       {editing ? (
-        <>
-          <button onClick={handleRename} disabled={loading || !newLabel} style={{ marginRight: 8 }}>Save</button>
-          <button onClick={() => setEditing(false)} disabled={loading}>Cancel</button>
-        </>
+        <div className="btn-group">
+          <button onClick={handleRename} disabled={loading || !newLabel} className="btn btn-sm">Save</button>
+          <button onClick={() => setEditing(false)} disabled={loading} className="btn btn-secondary btn-sm">Cancel</button>
+        </div>
       ) : (
-        <>
-          <button onClick={() => setEditing(true)} style={{ marginRight: 8 }}>Rename</button>
-          <button onClick={handleDelete} disabled={loading}>Delete</button>
-        </>
+        <div className="btn-group">
+          <button onClick={() => setEditing(true)} className="btn btn-outline btn-sm">Rename</button>
+          <button onClick={handleDelete} disabled={loading} className="btn btn-danger btn-sm">Delete</button>
+        </div>
       )}
     </div>
   );
