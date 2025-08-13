@@ -87,8 +87,19 @@ function App() {
         }
       });
       const data = await res.json();
-      setRecordings(data);
+      if (!res.ok) {
+        console.error('Fetch recordings failed:', data);
+        setRecordings([]);
+        return;
+      }
+      if (Array.isArray(data)) {
+        setRecordings(data);
+      } else {
+        console.error('Unexpected recordings response (not array):', data);
+        setRecordings([]);
+      }
     } catch (err) {
+      console.error('Error fetching recordings:', err);
       setRecordings([]);
     }
   };
