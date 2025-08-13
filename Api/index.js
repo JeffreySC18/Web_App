@@ -39,6 +39,8 @@ function authenticateToken(req, res, next) {
 app.post('/register', async (req, res) => {
   const { username, email, password } = req.body || {};
   const problems = [];
+  // Debug logging (can remove later)
+  console.log('Register attempt raw body:', req.body);
   if (typeof username !== 'string' || !username.trim()) problems.push('Username is required');
   if (typeof email !== 'string' || !email.trim()) problems.push('Email is required');
   if (typeof password !== 'string' || !password) problems.push('Password is required');
@@ -86,7 +88,10 @@ app.post('/register', async (req, res) => {
         return res.status(400).json({ error: 'Conflict', details: dupDetails.length ? dupDetails : ['Duplicate value'] });
       }
       if (insertError.code === '23502') {
-        return res.status(400).json({ error: 'Missing required field', details: ['A required field was null'] });
+  // Attempt to extract column from message
+  const colMatch = /column "(.*)"/.exec(insertError.message || '');
+  const col = colMatch ? colMatch[1] : 'unknown column';
+  return res.status(400).json({ error: 'Missing required field', details: [`${col} was null or empty`] });
       }
       return res.status(500).json({ error: 'Registration failed', details: ['Unexpected database error'] });
     }
