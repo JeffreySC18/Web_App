@@ -7,8 +7,13 @@ const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const { spawn } = require('child_process');
 
-const SUPABASE_URL = 'https://rhefugkfsymtbamhjkha.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoZWZ1Z2tmc3ltdGJhbWhqa2hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUwMjU2MTQsImV4cCI6MjA3MDYwMTYxNH0.vTkpHVUwWXxtmm-s0E-CUknbqdnlPWmHplERjEFoW5Q';
+// Read Supabase config from environment for deployment safety
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error('Missing SUPABASE_URL or SUPABASE_* key environment variables');
+  // Exit early in hosted environments; in local dev, set .env
+}
 const BUCKET_NAME = 'recordings';
 // (Optional) environment vars for transcription script path
 const TRANSCRIBE_SCRIPT = process.env.TRANSCRIBE_SCRIPT || 'python transcription/whisper_transcribe.py';
@@ -26,7 +31,15 @@ app.use(cors(corsOrigin ? { origin: corsOrigin } : undefined));
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-const JWT_SECRET = 'your_jwt_secret'; // Change this in production
+const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
+
+// Basic health endpoints
+app.get('/', (_req, res) => {
+  res.type('text/plain').send('OK');
+});
+app.get('/healthz', (_req, res) => {
+  res.json({ ok: true, uptime: process.uptime() });
+});
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -420,6 +433,7 @@ app.put('/account/password', authenticateToken, async (req, res) => {
   }
 });
 
-app.listen(3001, () => {
-  console.log('API server running on http://localhost:3001');
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`API server running on http://localhost:${PORT}`);
 });
