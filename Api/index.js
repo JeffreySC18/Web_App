@@ -17,7 +17,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+// CORS: allow localhost in dev; restrict via CORS_ORIGIN in production
+const corsOrigin = process.env.NODE_ENV === 'production'
+  ? (process.env.CORS_ORIGIN || undefined)
+  : (process.env.CORS_ORIGIN || 'http://localhost:3000');
+app.use(cors(corsOrigin ? { origin: corsOrigin } : undefined));
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
@@ -320,6 +324,100 @@ app.put('/transcripts/:id', authenticateToken, async (req, res) => {
     .eq('user_id', userId);
   if (error) return res.status(500).json({ error: 'Failed to update transcript' });
   res.json({ success: true });
+});
+
+// Delete entire user account (requires password confirmation)
+app.delete('/account', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { password } = req.body || {};
+  if (!password) return res.status(400).json({ error: 'Password required' });
+  try {
+    // Fetch user for password verification
+    const { data: user, error: userErr } = await supabase
+      .from('users')
+      .select('id, password_hash')
+      .eq('id', userId)
+      .single();
+    if (userErr || !user) return res.status(404).json({ error: 'User not found' });
+    if (!bcrypt.compareSync(password, user.password_hash)) return res.status(400).json({ error: 'Incorrect password' });
+
+    // Get user recordings to remove from storage
+    const { data: recs, error: recErr } = await supabase
+      .from('recordings')
+      .select('id, audio_url');
+    if (recErr) console.error('Fetch recordings before delete error:', recErr);
+    const userRecs = (recs || []).filter(r => r.audio_url && r.id); // filter only user-related will rely on policy, else add .eq('user_id', userId)
+
+    // Filter only this user's recordings explicitly (safer)
+    const { data: myRecs } = await supabase
+      .from('recordings')
+      .select('id, audio_url')
+      .eq('user_id', userId);
+    if (myRecs && myRecs.length) {
+      const paths = myRecs.map(r => {
+        const part = r.audio_url.split(`/recordings/`)[1];
+        return part;
+      }).filter(Boolean);
+      if (paths.length) await supabase.storage.from(BUCKET_NAME).remove(paths);
+    }
+
+    // Delete transcripts
+    const { error: delTransErr } = await supabase.from('transcripts').delete().eq('user_id', userId);
+    if (delTransErr) console.error('Delete transcripts error:', delTransErr);
+    // Delete recordings metadata
+    const { error: delRecErr } = await supabase.from('recordings').delete().eq('user_id', userId);
+    if (delRecErr) console.error('Delete recordings error:', delRecErr);
+    // Delete user row
+    const { error: delUserErr } = await supabase.from('users').delete().eq('id', userId);
+    if (delUserErr) {
+      console.error('Delete user error:', delUserErr);
+      return res.status(500).json({ error: 'Failed to delete user' });
+    }
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('Account deletion exception:', e);
+    return res.status(500).json({ error: 'Server error deleting account' });
+  }
+});
+
+// Update username
+app.put('/account/username', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { new_username } = req.body || {};
+  if (typeof new_username !== 'string' || !new_username.trim()) return res.status(400).json({ error: 'Username required' });
+  if (new_username.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
+  try {
+    // Check uniqueness
+    const { data: existing } = await supabase.from('users').select('id').eq('username', new_username).maybeSingle();
+    if (existing && existing.id !== userId) return res.status(400).json({ error: 'Username already taken' });
+    const { error: updErr } = await supabase.from('users').update({ username: new_username }).eq('id', userId);
+    if (updErr) return res.status(500).json({ error: 'Failed to update username' });
+    return res.json({ success: true, username: new_username });
+  } catch (e) {
+    console.error('Username update error:', e);
+    return res.status(500).json({ error: 'Server error updating username' });
+  }
+});
+
+// Update password
+app.put('/account/password', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { current_password, new_password, confirm_password } = req.body || {};
+  if (!current_password || !new_password || !confirm_password) return res.status(400).json({ error: 'All password fields required' });
+  if (new_password !== confirm_password) return res.status(400).json({ error: 'New passwords do not match' });
+  if (new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  try {
+    const { data: user, error: userErr } = await supabase.from('users').select('password_hash').eq('id', userId).single();
+    if (userErr || !user) return res.status(404).json({ error: 'User not found' });
+    if (!bcrypt.compareSync(current_password, user.password_hash)) return res.status(400).json({ error: 'Current password incorrect' });
+    const newHash = bcrypt.hashSync(new_password, 10);
+    const { error: updErr } = await supabase.from('users').update({ password_hash: newHash }).eq('id', userId);
+    if (updErr) return res.status(500).json({ error: 'Failed to update password' });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('Password update error:', e);
+    return res.status(500).json({ error: 'Server error updating password' });
+  }
 });
 
 app.listen(3001, () => {

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { API_BASE } from './config';
 
 function RecordingItem({ rec, token, onRename, onDelete }) {
   const [editing, setEditing] = useState(false);
@@ -8,7 +9,7 @@ function RecordingItem({ rec, token, onRename, onDelete }) {
   const handleRename = async () => {
     setLoading(true);
     try {
-      await fetch(`http://localhost:3001/recordings/${rec.id}`, {
+  await fetch(`${API_BASE}/recordings/${rec.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -26,7 +27,7 @@ function RecordingItem({ rec, token, onRename, onDelete }) {
     if (!window.confirm('Delete this recording?')) return;
     setLoading(true);
     try {
-      await fetch(`http://localhost:3001/recordings/${rec.id}`, {
+  await fetch(`${API_BASE}/recordings/${rec.id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`

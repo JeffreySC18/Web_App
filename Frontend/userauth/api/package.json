@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.46.2",
+    "busboy": "^1.6.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

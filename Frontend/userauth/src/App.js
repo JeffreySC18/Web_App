@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { API_BASE } from './config';
 import AuthForm from './AuthForm';
 import RecordingItem from './RecordingItem';
 // Transcript history toggle
@@ -33,8 +34,16 @@ function App() {
   const [editingTranscriptId, setEditingTranscriptId] = useState(null);
   const [editingTranscriptText, setEditingTranscriptText] = useState('');
   const [editingTranscriptSaving, setEditingTranscriptSaving] = useState(false);
-  // Tabs: 'record' | 'library'
+  // Tabs: 'record' | 'library' | 'settings'
   const [activeTab, setActiveTab] = useState('record');
+  // Settings form state
+  const [newUsername, setNewUsername] = useState('');
+  const [usernameUpdating, setUsernameUpdating] = useState(false);
+  const [pwCurrent, setPwCurrent] = useState('');
+  const [pwNew, setPwNew] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [pwUpdating, setPwUpdating] = useState(false);
+  const [settingsMsg, setSettingsMsg] = useState('');
   const [expandedRecordingIds, setExpandedRecordingIds] = useState(new Set());
 
   const toggleExpand = (id) => {
@@ -93,6 +102,22 @@ function App() {
     setRecording(false);
   };
 
+  // Discard current (in-memory) recording & transcript before upload
+  const discardCurrent = () => {
+    // If still recording, stop streams silently
+    if (recording) {
+      try { if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop(); } catch {}
+      if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    }
+    chunksRef.current = [];
+    setAudioURL(null);
+    setTranscriptText('');
+    setTranscriptWords([]);
+    setLabel('');
+    setRecording(false);
+    stopTimer();
+  };
+
   useEffect(() => {
     return () => { // unmount cleanup
       stopRecording();
@@ -113,7 +138,7 @@ function App() {
       if (transcriptWords && transcriptWords.length > 0) {
         try { formData.append('words', JSON.stringify(transcriptWords)); } catch {}
       }
-      const res = await fetch('http://localhost:3001/recordings', {
+  const res = await fetch(`${API_BASE}/recordings`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -134,7 +159,7 @@ function App() {
           const poll = async () => {
             attempts++;
             try {
-              const resT = await fetch('http://localhost:3001/transcripts', { headers: { 'Authorization': `Bearer ${token}` } });
+              const resT = await fetch(`${API_BASE}/transcripts`, { headers: { 'Authorization': `Bearer ${token}` } });
               const arr = await resT.json();
               if (Array.isArray(arr)) setTranscripts(arr);
               const found = Array.isArray(arr) && arr.some(t => t.recording_id === data.recording_id);
@@ -157,7 +182,7 @@ function App() {
   // Fetch user's recordings from backend
   const fetchRecordings = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:3001/recordings', {
+  const res = await fetch(`${API_BASE}/recordings`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -184,7 +209,7 @@ function App() {
     if (!token) return;
     setLoadingTranscripts(true);
     try {
-      const res = await fetch('http://localhost:3001/transcripts', {
+  const res = await fetch(`${API_BASE}/transcripts`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
@@ -200,7 +225,7 @@ function App() {
   const handleDeleteRecording = async (id) => {
     if (!window.confirm('Delete this recording? This will remove its transcript too.')) return;
     try {
-      await fetch(`http://localhost:3001/recordings/${id}`, {
+  await fetch(`${API_BASE}/recordings/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -224,7 +249,7 @@ function App() {
       const blob = await fetch(audioURL).then(r => r.blob());
       const formData = new FormData();
       formData.append('audio', blob, 'temp.webm');
-      const res = await fetch('http://localhost:3001/transcribe', {
+  const res = await fetch(`${API_BASE}/transcribe`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData
@@ -252,7 +277,7 @@ function App() {
     const fetchMe = async () => {
       if (token && !currentUser) {
         try {
-          const res = await fetch('http://localhost:3001/me', { headers: { 'Authorization': `Bearer ${token}` } });
+          const res = await fetch(`${API_BASE}/me`, { headers: { 'Authorization': `Bearer ${token}` } });
           const data = await res.json();
           if (res.ok) setCurrentUser(data);
         } catch {}
@@ -280,8 +305,14 @@ function App() {
             className={`btn btn-sm ${activeTab === 'library' ? '' : 'btn-outline'}`}
             onClick={() => { setActiveTab('library'); fetchRecordings(); fetchTranscripts(); }}
           >Library</button>
+          <button
+            className={`btn btn-sm ${activeTab === 'settings' ? '' : 'btn-outline'}`}
+            onClick={() => setActiveTab('settings')}
+          >Settings</button>
         </div>
-  <button className="btn btn-outline btn-sm" onClick={() => { setToken(null); setCurrentUser(null); setShowLogin(true); }}>Logout</button>
+  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+    <button className="btn btn-outline btn-sm" onClick={() => { setToken(null); setCurrentUser(null); setShowLogin(true); }}>Logout</button>
+  </div>
   {activeTab === 'record' && (
   <div style={{ marginTop: 16 }} className="btn-group">
           <button className="btn btn-lg" onClick={startRecording} disabled={recording}>
@@ -317,6 +348,15 @@ function App() {
             <button onClick={uploadRecording} disabled={!audioURL || !label || uploading || transcribing || recording} className="btn btn-lg" style={{ marginTop: 16 }}>
               {transcribing ? 'Waiting for transcript…' : (uploading ? 'Uploading...' : 'Save Recording')}
             </button>
+            <div style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                disabled={(!audioURL && !recording) || uploading}
+                onClick={discardCurrent}
+                style={{ width: '60%' }}
+              >Discard</button>
+            </div>
             <div style={{ marginTop: 24, textAlign: 'left' }}>
               <h3 style={{ marginBottom: 8 }}>Transcript (editable)</h3>
               {transcribing && (
@@ -386,7 +426,7 @@ function App() {
                                     e.stopPropagation();
                                     setEditingTranscriptSaving(true);
                                     try {
-                                      await fetch(`http://localhost:3001/transcripts/${transcript.id}`, {
+                                      await fetch(`${API_BASE}/transcripts/${transcript.id}`, {
                                         method: 'PUT',
                                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                                         body: JSON.stringify({ full_text: editingTranscriptText })
@@ -436,6 +476,111 @@ function App() {
                 );
               })}
             </div>
+          </div>
+        )}
+        {activeTab === 'settings' && (
+          <div style={{ marginTop: 24, width: '100%', textAlign: 'left' }}>
+            <h2 style={{ color: '#6a82fb', marginBottom: 16 }}>Account Settings</h2>
+            {settingsMsg && <div style={{ marginBottom: 12, fontSize: 13, color: '#1d4ed8', whiteSpace: 'pre-line' }}>{settingsMsg}</div>}
+            <section style={{ marginBottom: 32 }}>
+              <h3 style={{ margin: 0, fontSize: 18 }}>Change Username</h3>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  placeholder="New username"
+                  value={newUsername}
+                  onChange={e => setNewUsername(e.target.value)}
+                  style={{ padding: '8px', borderRadius: 8, border: '1px solid #d1d5db' }}
+                />
+                <button
+                  className="btn btn-sm"
+                  disabled={usernameUpdating || !newUsername.trim() || newUsername.trim() === currentUser?.username}
+                  onClick={async () => {
+                    setSettingsMsg('');
+                    setUsernameUpdating(true);
+                    try {
+                      const res = await fetch(`${API_BASE}/account/username`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ new_username: newUsername.trim() })
+                      });
+                      const data = await res.json();
+                      if (res.ok && data.success) {
+                        setCurrentUser(u => ({ ...u, username: data.username }));
+                        setSettingsMsg('Username updated');
+                      } else {
+                        setSettingsMsg(data.error || 'Failed to update username');
+                      }
+                    } catch {
+                      setSettingsMsg('Server error updating username');
+                    }
+                    setUsernameUpdating(false);
+                  }}
+                >{usernameUpdating ? 'Updating...' : 'Save'}</button>
+              </div>
+            </section>
+            <section style={{ marginBottom: 32 }}>
+              <h3 style={{ margin: 0, fontSize: 18 }}>Change Password</h3>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
+                <input type="password" placeholder="Current password" value={pwCurrent} onChange={e => setPwCurrent(e.target.value)} />
+                <input type="password" placeholder="New password" value={pwNew} onChange={e => setPwNew(e.target.value)} />
+                <input type="password" placeholder="Confirm new password" value={pwConfirm} onChange={e => setPwConfirm(e.target.value)} />
+                <button
+                  className="btn btn-sm"
+                  disabled={pwUpdating || !pwCurrent || !pwNew || !pwConfirm}
+                  onClick={async () => {
+                    setSettingsMsg('');
+                    if (pwNew !== pwConfirm) { setSettingsMsg('New passwords do not match'); return; }
+                    setPwUpdating(true);
+                    try {
+                      const res = await fetch(`${API_BASE}/account/password`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ current_password: pwCurrent, new_password: pwNew, confirm_password: pwConfirm })
+                      });
+                      const data = await res.json();
+                      if (res.ok && data.success) {
+                        setSettingsMsg('Password updated');
+                        setPwCurrent(''); setPwNew(''); setPwConfirm('');
+                      } else setSettingsMsg(data.error || 'Failed to update password');
+                    } catch {
+                      setSettingsMsg('Server error updating password');
+                    }
+                    setPwUpdating(false);
+                  }}
+                >{pwUpdating ? 'Updating...' : 'Save'}</button>
+              </div>
+            </section>
+            <section>
+              <h3 style={{ margin: 0, fontSize: 18, color: '#b91c1c' }}>Danger Zone</h3>
+              <p style={{ fontSize: 13, color: '#555' }}>Delete your account and all associated recordings & transcripts.</p>
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  const pw = window.prompt('Enter your password to permanently delete your account. This cannot be undone.');
+                  if (!pw) return;
+                  if (!window.confirm('Are you absolutely sure? This will delete all recordings and transcripts.')) return;
+                  (async () => {
+                    try {
+                      const res = await fetch(`${API_BASE}/account`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ password: pw })
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (res.ok && data.success) {
+                        alert('Account deleted.');
+                        setToken(null); setCurrentUser(null); setShowLogin(true);
+                      } else {
+                        setSettingsMsg(data?.error || 'Failed to delete account');
+                      }
+                    } catch (e) {
+                      setSettingsMsg('Server error deleting account');
+                    }
+                  })();
+                }}
+              >Delete Account</button>
+            </section>
           </div>
         )}
       </div>

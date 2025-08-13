@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { API_BASE } from './config';
 
 function AuthForm({ type, onAuth }) {
   const [usernameOrEmail, setUsernameOrEmail] = useState(''); // login identifier
@@ -30,7 +31,7 @@ function AuthForm({ type, onAuth }) {
       } else { // login
         payload = { identifier: usernameOrEmail, password };
       }
-      const res = await fetch(`http://localhost:3001/${type}`, {
+  const res = await fetch(`${API_BASE}/${type}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
