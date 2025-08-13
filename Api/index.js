@@ -5,10 +5,13 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
+const { spawn } = require('child_process');
 
 const SUPABASE_URL = 'https://rhefugkfsymtbamhjkha.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJoZWZ1Z2tmc3ltdGJhbWhqa2hhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUwMjU2MTQsImV4cCI6MjA3MDYwMTYxNH0.vTkpHVUwWXxtmm-s0E-CUknbqdnlPWmHplERjEFoW5Q';
 const BUCKET_NAME = 'recordings';
+// (Optional) environment vars for transcription script path
+const TRANSCRIBE_SCRIPT = process.env.TRANSCRIBE_SCRIPT || 'python transcription/whisper_transcribe.py';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -86,6 +89,8 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
   const userId = req.user.id;
   const label = req.body.label;
   const audio = req.file;
+  const incomingFullText = req.body.full_text;
+  const incomingWords = req.body.words ? (() => { try { return JSON.parse(req.body.words); } catch { return null; } })() : null;
   if (!label || !audio) {
     console.error('Missing label or audio:', { label, audio });
     return res.status(400).json({ error: 'Missing label or audio' });
@@ -101,14 +106,46 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
   }
   const audio_url = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET_NAME}/${fileName}`;
   // Save metadata in DB
-  const { error: dbError } = await supabase
+  const { data: recInsert, error: dbError } = await supabase
     .from('recordings')
-    .insert([{ user_id: userId, label, audio_url }]);
+    .insert([{ user_id: userId, label, audio_url }])
+    .select('id')
+    .single();
   if (dbError) {
     console.error('Supabase DB insert error:', dbError);
     return res.status(500).json({ error: 'Failed to save recording metadata', details: dbError.message || dbError });
   }
-  res.json({ success: true, audio_url });
+  // Kick off async transcription using python script
+  if (incomingFullText) {
+    const { error: tErr } = await supabase
+      .from('transcripts')
+      .insert([{ user_id: userId, recording_id: recInsert.id, full_text: incomingFullText, words: incomingWords }]);
+    if (tErr) console.error('Insert provided transcript error:', tErr);
+    return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
+  }
+  // Fallback: spawn async transcription if client did not provide
+  try {
+    const outJson = `transcript_${recInsert.id}.json`;
+    const py = spawn('python', ['transcription/whisper_transcribe.py', audio_url, outJson], { cwd: process.cwd() });
+    py.stderr.on('data', d => { console.error('Transcribe stderr:', d.toString()); });
+    py.on('close', async (code) => {
+      if (code !== 0) { console.error('Transcription process failed code', code); return; }
+      try {
+        const fs = require('fs');
+        if (fs.existsSync(outJson)) {
+          const raw = fs.readFileSync(outJson, 'utf-8');
+          const parsed = JSON.parse(raw);
+          const { full_text = '', words = [] } = parsed;
+            const { error: tErr } = await supabase
+              .from('transcripts')
+              .insert([{ user_id: userId, recording_id: recInsert.id, full_text, words }]);
+            if (tErr) console.error('Insert transcript error:', tErr);
+          fs.unlink(outJson, () => {});
+        }
+      } catch (e) { console.error('Transcript post-process error:', e); }
+    });
+  } catch (e) { console.error('Failed to spawn transcription script:', e); }
+  res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
 });
 
 // Get all recordings for the logged-in user
@@ -177,6 +214,66 @@ app.get('/me', authenticateToken, async (req, res) => {
     console.error('Me route exception:', e);
     return res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Immediate transcription endpoint (does not persist recording or transcript)
+app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
+  const audio = req.file;
+  if (!audio) return res.status(400).json({ error: 'Missing audio' });
+  try {
+    const tmpName = `tmp_transcribe_${Date.now()}.webm`;
+    const fs = require('fs');
+    fs.writeFileSync(tmpName, audio.buffer);
+    const { spawnSync } = require('child_process');
+    const outJson = `tmp_transcript_${Date.now()}.json`;
+    const run = spawnSync('python', ['transcription/whisper_transcribe.py', tmpName, outJson], { encoding: 'utf-8' });
+    if (run.error) {
+      console.error('Transcribe spawn error', run.error);
+      return res.status(500).json({ error: 'Transcription process failed' });
+    }
+    if (run.status !== 0) {
+      console.error('Transcribe non-zero exit', run.stdout, run.stderr);
+      return res.status(500).json({ error: 'Transcription failed' });
+    }
+    const raw = fs.existsSync(outJson) ? fs.readFileSync(outJson, 'utf-8') : '{}';
+    let parsed = {};
+    try { parsed = JSON.parse(raw); } catch (e) { parsed = { full_text: '', words: [] }; }
+    fs.unlink(tmpName, () => {});
+    fs.unlink(outJson, () => {});
+    return res.json({ full_text: parsed.full_text || '', words: parsed.words || [] });
+  } catch (e) {
+    console.error('Immediate transcription error:', e);
+    return res.status(500).json({ error: 'Server error during transcription' });
+  }
+});
+
+// Transcripts list for user
+app.get('/transcripts', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { data, error } = await supabase
+    .from('transcripts')
+    .select('id, recording_id, full_text, words, updated_at')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false });
+  if (error) return res.status(500).json({ error: 'Failed to fetch transcripts' });
+  res.json(data);
+});
+
+// Update transcript (edit full_text; optionally words if client recalculates)
+app.put('/transcripts/:id', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const id = req.params.id;
+  const { full_text, words } = req.body;
+  if (!full_text) return res.status(400).json({ error: 'Missing full_text' });
+  const payload = { full_text, updated_at: new Date().toISOString() };
+  if (words) payload.words = words;
+  const { error } = await supabase
+    .from('transcripts')
+    .update(payload)
+    .eq('id', id)
+    .eq('user_id', userId);
+  if (error) return res.status(500).json({ error: 'Failed to update transcript' });
+  res.json({ success: true });
 });
 
 app.listen(3001, () => {

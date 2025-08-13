@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import AuthForm from './AuthForm';
 import RecordingItem from './RecordingItem';
+// Transcript history toggle
 import './App.css';
 
 function App() {
@@ -15,10 +16,15 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [audioURL, setAudioURL] = useState(null);
+  const [transcriptText, setTranscriptText] = useState('');
+  const [transcribing, setTranscribing] = useState(false);
   // Remove chunks from state, use local variable
   const [label, setLabel] = useState('');
   const [uploading, setUploading] = useState(false);
   const [recordings, setRecordings] = useState([]);
+  const [showTranscripts, setShowTranscripts] = useState(false);
+  const [transcripts, setTranscripts] = useState([]);
+  const [loadingTranscripts, setLoadingTranscripts] = useState(false);
 
   let localChunks = [];
   const startRecording = async () => {
@@ -59,6 +65,7 @@ function App() {
       const formData = new FormData();
       formData.append('audio', blob, 'recording.webm');
       formData.append('label', label);
+      if (transcriptText) formData.append('full_text', transcriptText);
       const res = await fetch('http://localhost:3001/recordings', {
         method: 'POST',
         headers: {
@@ -70,7 +77,22 @@ function App() {
       if (data.success) {
         setAudioURL(null);
         setLabel('');
+  setTranscriptText('');
         fetchRecordings();
+        // If transcript processing flagged, poll transcripts
+        if (data.transcript_processing) {
+          setShowTranscripts(true);
+          let attempts = 0;
+            const poll = async () => {
+              attempts++;
+              await fetchTranscripts();
+              const found = transcripts.some(t => t.recording_id === data.recording_id);
+              if (!found && attempts < 15) {
+                setTimeout(poll, 4000);
+              }
+            };
+          setTimeout(poll, 4000);
+        }
       }
     } catch (err) {
       alert('Failed to upload recording');
@@ -79,7 +101,7 @@ function App() {
   };
 
   // Fetch user's recordings from backend
-  const fetchRecordings = async () => {
+  const fetchRecordings = useCallback(async () => {
     try {
       const res = await fetch('http://localhost:3001/recordings', {
         headers: {
@@ -102,11 +124,61 @@ function App() {
       console.error('Error fetching recordings:', err);
       setRecordings([]);
     }
-  };
+  }, [token]);
+
+  const fetchTranscripts = useCallback( async () => {
+    if (!token) return;
+    setLoadingTranscripts(true);
+    try {
+      const res = await fetch('http://localhost:3001/transcripts', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data)) setTranscripts(data);
+      else setTranscripts([]);
+    } catch (e) {
+      console.error('Fetch transcripts error', e);
+      setTranscripts([]);
+    }
+    setLoadingTranscripts(false);
+  }, [token]);
+
+  useEffect(() => {
+    if (showTranscripts) fetchTranscripts();
+  }, [showTranscripts, fetchTranscripts]);
 
   useEffect(() => {
     if (token) fetchRecordings();
-  }, [token]);
+  }, [token, fetchRecordings]);
+
+  const runImmediateTranscription = useCallback( async () => {
+    if (!audioURL) return;
+    setTranscribing(true);
+    try {
+      const blob = await fetch(audioURL).then(r => r.blob());
+      const formData = new FormData();
+      formData.append('audio', blob, 'temp.webm');
+      const res = await fetch('http://localhost:3001/transcribe', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok && data.full_text !== undefined) {
+        setTranscriptText(data.full_text);
+      } else {
+        console.error('Transcription failed', data);
+      }
+    } catch (e) {
+      console.error('Immediate transcription error', e);
+    }
+    setTranscribing(false);
+  }, [audioURL, token]);
+
+  // Trigger immediate transcription when audioURL becomes available
+  useEffect(() => {
+    if (audioURL && token) runImmediateTranscription();
+  }, [audioURL, token, runImmediateTranscription]);
 
   if (token) {
     return (
@@ -123,6 +195,9 @@ function App() {
           </button>
           <button onClick={stopRecording} disabled={!recording}>
             Stop Recording
+          </button>
+          <button style={{ marginLeft: 10 }} onClick={() => setShowTranscripts(s => !s)}>
+            {showTranscripts ? 'Hide Transcript History' : 'Transcript History'}
           </button>
         </div>
         {audioURL && (
@@ -141,6 +216,16 @@ function App() {
             <button onClick={uploadRecording} disabled={!label || uploading} style={{ marginTop: 10 }}>
               {uploading ? 'Uploading...' : 'Save Recording'}
             </button>
+            <div style={{ marginTop: 24, textAlign: 'left' }}>
+              <h3 style={{ marginBottom: 8 }}>Transcript (editable)</h3>
+              {transcribing && <p>Transcribing...</p>}
+              <textarea
+                value={transcriptText}
+                onChange={e => setTranscriptText(e.target.value)}
+                placeholder={transcribing ? 'Transcribing...' : 'Transcript will appear here'}
+                style={{ width: '100%', minHeight: 150, padding: 10, borderRadius: 8, border: '1px solid #d1d5db', fontFamily: 'monospace' }}
+              />
+            </div>
           </div>
         )}
         <div style={{ marginTop: 40 }}>
@@ -158,6 +243,43 @@ function App() {
             ))}
           </div>
         </div>
+        {showTranscripts && (
+          <div style={{ marginTop: 40 }}>
+            <h2 style={{ color: '#6a82fb', marginBottom: 16 }}>Transcript History</h2>
+            {loadingTranscripts && <p>Loading transcripts...</p>}
+            {!loadingTranscripts && transcripts.length === 0 && <p>No transcripts yet.</p>}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {transcripts.map(t => (
+                <div key={t.id} style={{ padding: 16, background: '#fff', borderRadius: 12, boxShadow: '0 2px 6px rgba(0,0,0,0.08)' }}>
+                  <small style={{ color: '#6b7280' }}>Recording #{t.recording_id}</small>
+                  <textarea
+                    defaultValue={t.full_text}
+                    style={{ width: '100%', marginTop: 8, minHeight: 120, borderRadius: 8, border: '1px solid #d1d5db', padding: 8 }}
+                    onBlur={async (e) => {
+                      const full_text = e.target.value;
+                      await fetch(`http://localhost:3001/transcripts/${t.id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        body: JSON.stringify({ full_text })
+                      });
+                    }}
+                  />
+                  {t.words && Array.isArray(t.words) && t.words.length > 0 && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer' }}>Word timings ({t.words.length})</summary>
+                      <div style={{ maxHeight: 120, overflowY: 'auto', fontSize: 12, marginTop: 6 }}>
+                        {t.words.slice(0,200).map((w,i) => (
+                          <span key={i} style={{ marginRight: 6 }}>{w.word}<sup>{w.start?.toFixed?.(1)}</sup></span>
+                        ))}
+                        {t.words.length > 200 && <div>... truncated ...</div>}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
