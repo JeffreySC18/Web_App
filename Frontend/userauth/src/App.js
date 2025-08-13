@@ -17,6 +17,7 @@ function App() {
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [audioURL, setAudioURL] = useState(null);
   const [transcriptText, setTranscriptText] = useState('');
+  const [transcriptWords, setTranscriptWords] = useState([]); // word-level timings
   const [transcribing, setTranscribing] = useState(false);
   // Remove chunks from state, use local variable
   const [label, setLabel] = useState('');
@@ -66,6 +67,9 @@ function App() {
       formData.append('audio', blob, 'recording.webm');
       formData.append('label', label);
       if (transcriptText) formData.append('full_text', transcriptText);
+      if (transcriptWords && transcriptWords.length > 0) {
+        try { formData.append('words', JSON.stringify(transcriptWords)); } catch {}
+      }
       const res = await fetch('http://localhost:3001/recordings', {
         method: 'POST',
         headers: {
@@ -77,21 +81,28 @@ function App() {
       if (data.success) {
         setAudioURL(null);
         setLabel('');
-  setTranscriptText('');
+        setTranscriptText('');
+        setTranscriptWords([]);
         fetchRecordings();
         // If transcript processing flagged, poll transcripts
         if (data.transcript_processing) {
           setShowTranscripts(true);
           let attempts = 0;
-            const poll = async () => {
-              attempts++;
-              await fetchTranscripts();
-              const found = transcripts.some(t => t.recording_id === data.recording_id);
-              if (!found && attempts < 15) {
-                setTimeout(poll, 4000);
-              }
-            };
+          const poll = async () => {
+            attempts++;
+            try {
+              const resT = await fetch('http://localhost:3001/transcripts', { headers: { 'Authorization': `Bearer ${token}` } });
+              const arr = await resT.json();
+              if (Array.isArray(arr)) setTranscripts(arr);
+              const found = Array.isArray(arr) && arr.some(t => t.recording_id === data.recording_id);
+              if (!found && attempts < 15) setTimeout(poll, 4000);
+            } catch {}
+          };
           setTimeout(poll, 4000);
+        } else {
+          // Immediate transcript already saved; refresh history once
+          setShowTranscripts(true);
+          fetchTranscripts();
         }
       }
     } catch (err) {
@@ -166,6 +177,7 @@ function App() {
       const data = await res.json();
       if (res.ok && data.full_text !== undefined) {
         setTranscriptText(data.full_text);
+        setTranscriptWords(Array.isArray(data.words) ? data.words : []);
       } else {
         console.error('Transcription failed', data);
       }

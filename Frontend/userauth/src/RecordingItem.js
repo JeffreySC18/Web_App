@@ -52,7 +52,8 @@ function RecordingItem({ rec, token, onRename, onDelete }) {
         )}
         <div style={{ fontSize: 12, color: '#888' }}>{new Date(rec.created_at).toLocaleString()}</div>
       </div>
-      <audio controls src={`http://localhost:3001/recordings/${rec.id}/audio?token=${token}`} style={{ width: 180 }} />
+  {/* Use direct public Supabase storage URL saved in recording metadata */}
+  <audio controls src={rec.audio_url} style={{ width: 180 }} />
       {editing ? (
         <>
           <button onClick={handleRename} disabled={loading || !newLabel} style={{ marginRight: 8 }}>Save</button>
