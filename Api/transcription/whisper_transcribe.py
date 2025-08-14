@@ -38,7 +38,8 @@ out_path = sys.argv[2]
 
 try:
     local_audio = download_if_url(src)
-    model = whisper.load_model('medium')
+    model_name = os.environ.get('WHISPER_MODEL', 'base')
+    model = whisper.load_model(model_name)
     # word timestamps
     result = model.transcribe(local_audio, word_timestamps=True)
     full_text = result.get('text', '').strip()
