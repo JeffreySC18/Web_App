@@ -604,5 +604,7 @@ app.put('/account/password', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
+  const mode = USE_LOCAL_TRANSCRIBE ? 'local (Python Whisper)' : (openai ? 'openai' : 'openai (not configured)');
   console.log(`API server running on http://localhost:${PORT}`);
+  console.log(`Transcription mode: ${mode}`);
 });
