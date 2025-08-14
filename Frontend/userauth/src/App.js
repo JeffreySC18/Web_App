@@ -23,6 +23,7 @@ function App() {
   const [transcriptText, setTranscriptText] = useState('');
   const [transcriptWords, setTranscriptWords] = useState([]); // word-level timings
   const [transcribing, setTranscribing] = useState(false);
+  const [transcribeError, setTranscribeError] = useState('');
   // Remove chunks from state, use local variable
   const [label, setLabel] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -58,6 +59,7 @@ function App() {
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
   const timerRef = useRef(null);
+  const recordedBlobRef = useRef(null);
   const startTimer = () => {
     setElapsedTime(0);
     if (timerRef.current) clearInterval(timerRef.current);
@@ -79,6 +81,7 @@ function App() {
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        recordedBlobRef.current = blob;
         setAudioURL(URL.createObjectURL(blob));
         chunksRef.current = [];
     stopTimer();
@@ -111,6 +114,7 @@ function App() {
     }
     chunksRef.current = [];
     setAudioURL(null);
+  recordedBlobRef.current = null;
     setTranscriptText('');
     setTranscriptWords([]);
     setLabel('');
@@ -130,7 +134,7 @@ function App() {
     if (!audioURL || !label) return;
     setUploading(true);
     try {
-      const blob = await fetch(audioURL).then(r => r.blob());
+  const blob = recordedBlobRef.current || (await fetch(audioURL).then(r => r.blob()));
       const formData = new FormData();
       formData.append('audio', blob, 'recording.webm');
       formData.append('label', label);
@@ -245,8 +249,10 @@ function App() {
   const runImmediateTranscription = useCallback( async () => {
     if (!audioURL) return;
     setTranscribing(true);
+    setTranscribeError('');
     try {
-      const blob = await fetch(audioURL).then(r => r.blob());
+      const blob = recordedBlobRef.current || (await fetch(audioURL).then(r => r.blob()));
+      console.log('[ui] starting immediate transcription, blob size =', blob.size);
       const formData = new FormData();
       formData.append('audio', blob, 'temp.webm');
   // Add a client-side timeout to avoid indefinite spinner
@@ -259,15 +265,19 @@ function App() {
     signal: controller.signal
       });
   clearTimeout(t);
+      console.log('[ui] /transcribe response status =', res.status);
       const data = await res.json();
       if (res.ok && data.full_text !== undefined) {
         setTranscriptText(data.full_text);
         setTranscriptWords(Array.isArray(data.words) ? data.words : []);
       } else {
         console.error('Transcription failed', data);
+        setTranscribeError(data?.error || 'Transcription failed');
       }
     } catch (e) {
       console.error('Immediate transcription error', e);
+      if (e?.name === 'AbortError') setTranscribeError('Transcription timed out');
+      else setTranscribeError('Network error during transcription');
     }
     setTranscribing(false);
   }, [audioURL, token]);
@@ -372,6 +382,9 @@ function App() {
                     This can take a moment...
                   </div>
                 </div>
+              )}
+              {!transcribing && transcribeError && (
+                <div style={{ margin: '8px 0', color: '#b91c1c', fontSize: 13 }}>{transcribeError}</div>
               )}
               <textarea
                 value={transcriptText}
