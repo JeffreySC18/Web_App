@@ -65,18 +65,31 @@ const openai = (!USE_LOCAL_TRANSCRIBE && process.env.OPENAI_API_KEY)
 const app = express();
 app.use(express.json());
 // CORS: allow localhost in dev; restrict via CORS_ORIGIN in production
-const corsOrigin = process.env.NODE_ENV === 'production'
-  ? (process.env.CORS_ORIGIN || undefined)
+const rawCors = process.env.NODE_ENV === 'production'
+  ? (process.env.CORS_ORIGIN || '')
   : (process.env.CORS_ORIGIN || 'http://localhost:3000');
+const allowedOrigins = rawCors
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+// Create a dynamic origin function to support multiple origins
+const originFn = (origin, callback) => {
+  if (!origin) return callback(null, true); // non-browser or same-origin
+  if (allowedOrigins.length === 0) return callback(null, true); // allow all when not set
+  if (allowedOrigins.includes(origin)) return callback(null, true);
+  return callback(new Error('Not allowed by CORS'));
+};
 // Add preflight caching to cut down on OPTIONS requests; does not change POST runtime
-const corsOptions = corsOrigin ? {
-  origin: corsOrigin,
+const corsOptions = {
+  origin: originFn,
   methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
   allowedHeaders: ['authorization', 'content-type'],
   maxAge: 600, // seconds to cache preflight
   optionsSuccessStatus: 204
-} : undefined;
+};
 app.use(cors(corsOptions));
+// Ensure OPTIONS is handled for all routes
+app.options('*', cors(corsOptions));
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
