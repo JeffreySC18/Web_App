@@ -249,11 +249,16 @@ function App() {
       const blob = await fetch(audioURL).then(r => r.blob());
       const formData = new FormData();
       formData.append('audio', blob, 'temp.webm');
+  // Add a client-side timeout to avoid indefinite spinner
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 45000);
   const res = await fetch(`${API_BASE}/transcribe`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: formData
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: formData,
+    signal: controller.signal
       });
+  clearTimeout(t);
       const data = await res.json();
       if (res.ok && data.full_text !== undefined) {
         setTranscriptText(data.full_text);

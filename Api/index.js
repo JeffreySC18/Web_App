@@ -200,18 +200,21 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
       const arr = await resp.arrayBuffer();
       const file = await toFile(Buffer.from(arr), `rec_${recInsert.id}.webm`, { type: 'audio/webm' });
       let lastErr = null;
+    console.log(`[bg-transcribe] start user=${userId} rec=${recInsert.id}`);
       for (let i = 0; i < 3; i++) {
         try {
-          const t = await openai.audio.transcriptions.create({ file, model: 'whisper-1' });
+      const t = await openai.audio.transcriptions.create({ file, model: 'whisper-1' });
           const text = t.text || '';
           const { error: tErr } = await supabase
             .from('transcripts')
             .insert([{ user_id: userId, recording_id: recInsert.id, full_text: text, words: [] }]);
           if (tErr) console.error('Insert transcript error:', tErr);
           lastErr = null;
+      console.log(`[bg-transcribe] success user=${userId} rec=${recInsert.id} len=${text.length}`);
           break;
         } catch (err) {
           lastErr = err;
+      console.error(`[bg-transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
           if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
         }
       }
@@ -293,18 +296,28 @@ app.get('/me', authenticateToken, async (req, res) => {
 
 // Immediate transcription endpoint (does not persist recording or transcript)
 app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
+  // Hard timeout so the client doesn't spin forever if upstream stalls
+  res.setTimeout(65000, () => {
+    try { res.status(504).json({ error: 'Transcription timed out' }); } catch {}
+  });
   const audio = req.file;
   if (!audio) return res.status(400).json({ error: 'Missing audio' });
   if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY in server environment' });
   try {
+    const size = (audio.buffer && audio.buffer.length) || 0;
+    console.log(`[transcribe] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
     const file = await toFile(audio.buffer, `live_${Date.now()}.webm`, { type: audio.mimetype || 'audio/webm' });
     let lastErr = null;
     for (let i = 0; i < 3; i++) {
       try {
-        const transcription = await openai.audio.transcriptions.create({ file, model: 'whisper-1' });
+        const transcription = await openai.audio.transcriptions.create(
+          { file, model: 'whisper-1' }
+        );
+        console.log(`[transcribe] success user=${req.user?.id} textLen=${(transcription.text || '').length}`);
         return res.json({ full_text: transcription.text || '', words: [] });
       } catch (err) {
         lastErr = err;
+        console.error(`[transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
         if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
       }
     }
