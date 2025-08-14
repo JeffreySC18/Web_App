@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const { spawn } = require('child_process');
+const OpenAI = require('openai');
 
 // Read Supabase config from environment for deployment safety
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -15,10 +15,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   // Exit early in hosted environments; in local dev, set .env
 }
 const BUCKET_NAME = 'recordings';
-// (Optional) environment vars for transcription script path
-const TRANSCRIBE_SCRIPT = process.env.TRANSCRIBE_SCRIPT || 'python transcription/whisper_transcribe.py';
+// (Optional) environment vars for transcription (OpenAI API)
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 const app = express();
 app.use(express.json());
@@ -186,28 +186,34 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
     if (tErr) console.error('Insert provided transcript error:', tErr);
     return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
   }
-  // Fallback: spawn async transcription if client did not provide
-  try {
-    const outJson = `transcript_${recInsert.id}.json`;
-    const py = spawn('python', ['transcription/whisper_transcribe.py', audio_url, outJson], { cwd: process.cwd() });
-    py.stderr.on('data', d => { console.error('Transcribe stderr:', d.toString()); });
-    py.on('close', async (code) => {
-      if (code !== 0) { console.error('Transcription process failed code', code); return; }
-      try {
-        const fs = require('fs');
-        if (fs.existsSync(outJson)) {
-          const raw = fs.readFileSync(outJson, 'utf-8');
-          const parsed = JSON.parse(raw);
-          const { full_text = '', words = [] } = parsed;
-            const { error: tErr } = await supabase
-              .from('transcripts')
-              .insert([{ user_id: userId, recording_id: recInsert.id, full_text, words }]);
-            if (tErr) console.error('Insert transcript error:', tErr);
-          fs.unlink(outJson, () => {});
-        }
-      } catch (e) { console.error('Transcript post-process error:', e); }
-    });
-  } catch (e) { console.error('Failed to spawn transcription script:', e); }
+  // Fallback: async transcription via OpenAI if configured
+  if (!openai) {
+    return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
+  }
+  (async () => {
+    try {
+      // Fetch the public file we just uploaded
+      const resp = await fetch(audio_url);
+      const arr = await resp.arrayBuffer();
+      const buf = Buffer.from(arr);
+      const fs = require('fs');
+      const path = require('path');
+      const tmpName = path.join(process.cwd(), `bg_${recInsert.id}.webm`);
+      fs.writeFileSync(tmpName, buf);
+      const t = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(tmpName),
+        model: 'whisper-1'
+      });
+      fs.unlink(tmpName, () => {});
+      const text = t.text || '';
+      const { error: tErr } = await supabase
+        .from('transcripts')
+        .insert([{ user_id: userId, recording_id: recInsert.id, full_text: text, words: [] }]);
+      if (tErr) console.error('Insert transcript error:', tErr);
+    } catch (e) {
+      console.error('Background transcription error:', e);
+    }
+  })();
   res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
 });
 
@@ -283,27 +289,18 @@ app.get('/me', authenticateToken, async (req, res) => {
 app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
   const audio = req.file;
   if (!audio) return res.status(400).json({ error: 'Missing audio' });
+  if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY in server environment' });
   try {
-    const tmpName = `tmp_transcribe_${Date.now()}.webm`;
     const fs = require('fs');
+    const path = require('path');
+    const tmpName = path.join(process.cwd(), `tmp_${Date.now()}.webm`);
     fs.writeFileSync(tmpName, audio.buffer);
-    const { spawnSync } = require('child_process');
-    const outJson = `tmp_transcript_${Date.now()}.json`;
-    const run = spawnSync('python', ['transcription/whisper_transcribe.py', tmpName, outJson], { encoding: 'utf-8' });
-    if (run.error) {
-      console.error('Transcribe spawn error', run.error);
-      return res.status(500).json({ error: 'Transcription process failed' });
-    }
-    if (run.status !== 0) {
-      console.error('Transcribe non-zero exit', run.stdout, run.stderr);
-      return res.status(500).json({ error: 'Transcription failed' });
-    }
-    const raw = fs.existsSync(outJson) ? fs.readFileSync(outJson, 'utf-8') : '{}';
-    let parsed = {};
-    try { parsed = JSON.parse(raw); } catch (e) { parsed = { full_text: '', words: [] }; }
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(tmpName),
+      model: 'whisper-1'
+    });
     fs.unlink(tmpName, () => {});
-    fs.unlink(outJson, () => {});
-    return res.json({ full_text: parsed.full_text || '', words: parsed.words || [] });
+    return res.json({ full_text: transcription.text || '', words: [] });
   } catch (e) {
     console.error('Immediate transcription error:', e);
     return res.status(500).json({ error: 'Server error during transcription' });
