@@ -386,6 +386,16 @@ function App() {
               {!transcribing && transcribeError && (
                 <div style={{ margin: '8px 0', color: '#b91c1c', fontSize: 13 }}>{transcribeError}</div>
               )}
+              {!transcribing && transcribeError && (
+                <div style={{ margin: '8px 0' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={runImmediateTranscription}
+                    disabled={!audioURL}
+                  >Retry transcription</button>
+                </div>
+              )}
               <textarea
                 value={transcriptText}
                 onChange={e => setTranscriptText(e.target.value)}

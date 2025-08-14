@@ -1,5 +1,7 @@
 
 const express = require('express');
+// Prefer IPv4 to avoid flaky IPv6 routes on some hosts
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch (_) {}
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
@@ -38,8 +40,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
-      timeout: 60_000,
-      maxRetries: 2,
+      timeout: 90_000,
+      maxRetries: 3,
       ...(customOpenAIFetch ? { fetch: customOpenAIFetch } : {})
     })
   : null;
@@ -216,6 +218,8 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
   }
   (async () => {
     try {
+  // Allow storage to propagate and network to stabilize
+  await new Promise(r => setTimeout(r, 1200));
       // Fetch the public file we just uploaded
       const resp = await fetch(audio_url);
       const arr = await resp.arrayBuffer();
@@ -325,6 +329,8 @@ app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, r
   const size = (audio.buffer && audio.buffer.length) || 0;
     console.log(`[transcribe] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
     let lastErr = null;
+  // Small initial delay to avoid transient upstream resets
+  await new Promise(r => setTimeout(r, 1200));
     for (let i = 0; i < 3; i++) {
       try {
     // Recreate file each attempt to avoid any single-use stream issues
