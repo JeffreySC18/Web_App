@@ -89,7 +89,9 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 // Ensure OPTIONS is handled for all routes
-app.options('*', cors(corsOptions));
+// Express 5 uses path-to-regexp v6; use patterns compatible with v6
+app.options('/', cors(corsOptions));
+app.options('/:path(*)', cors(corsOptions));
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
