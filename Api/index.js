@@ -3,6 +3,11 @@ const express = require('express');
 // Prefer IPv4 to avoid flaky IPv6 routes on some hosts
 try { require('dns').setDefaultResultOrder('ipv4first'); } catch (_) {}
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const fsp = require('fs').promises;
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
@@ -37,7 +42,9 @@ const BUCKET_NAME = 'recordings';
 // (Optional) environment vars for transcription (OpenAI API)
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const openai = process.env.OPENAI_API_KEY
+const TRANSCRIBE_MODE = (process.env.TRANSCRIBE_MODE || 'openai').toLowerCase();
+const USE_LOCAL_TRANSCRIBE = TRANSCRIBE_MODE === 'local';
+const openai = (!USE_LOCAL_TRANSCRIBE && process.env.OPENAI_API_KEY)
   ? new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
       timeout: 90_000,
@@ -66,6 +73,63 @@ app.get('/', (_req, res) => {
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
+
+// Local Whisper helpers
+async function runPython(args, timeoutMs = 180000) {
+  const candidates = [['python', args], ['py', ['-3', ...args]]];
+  let lastErr = null;
+  for (const [exe, a] of candidates) {
+    try {
+      const proc = spawn(exe, a, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '', err = '';
+      proc.stdout.on('data', d => { out += d.toString(); });
+      proc.stderr.on('data', d => { err += d.toString(); });
+      const result = await new Promise((resolve, reject) => {
+        const t = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} ; reject(new Error('python process timeout')); }, timeoutMs);
+        proc.on('error', (e) => { clearTimeout(t); reject(e); });
+        proc.on('close', (code) => { clearTimeout(t); resolve({ code, out, err }); });
+      });
+      return result;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('python not found');
+}
+
+async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
+  const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'whisper-'));
+  const audioPath = path.join(tmpBase, `audio.${ext}`);
+  const outPath = path.join(tmpBase, 'out.json');
+  const scriptPath = path.join(__dirname, 'transcription', 'whisper_transcribe.py');
+  await fsp.writeFile(audioPath, buffer);
+  try {
+    const r = await runPython([scriptPath, audioPath, outPath]);
+    if (r.code !== 0) {
+      try { const j = JSON.parse(r.out || '{}'); if (j.error) throw new Error(j.error); } catch {}
+      throw new Error(r.err || r.out || 'whisper failed');
+    }
+    const jsonText = await fsp.readFile(outPath, 'utf-8');
+    return JSON.parse(jsonText);
+  } finally {
+    try { await fsp.rm(tmpBase, { recursive: true, force: true }); } catch {}
+  }
+}
+
+async function transcribeLocalFromUrl(url) {
+  const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'whisper-'));
+  const outPath = path.join(tmpBase, 'out.json');
+  const scriptPath = path.join(__dirname, 'transcription', 'whisper_transcribe.py');
+  try {
+    const r = await runPython([scriptPath, url, outPath]);
+    if (r.code !== 0) {
+      try { const j = JSON.parse(r.out || '{}'); if (j.error) throw new Error(j.error); } catch {}
+      throw new Error(r.err || r.out || 'whisper failed');
+    }
+    const jsonText = await fsp.readFile(outPath, 'utf-8');
+    return JSON.parse(jsonText);
+  } finally {
+    try { await fsp.rm(tmpBase, { recursive: true, force: true }); } catch {}
+  }
+}
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -181,7 +245,7 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
   const incomingFullText = req.body.full_text;
   const incomingWords = req.body.words ? (() => { try { return JSON.parse(req.body.words); } catch { return null; } })() : null;
   if (!label || !audio) {
-    console.error('Missing label or audio:', { label, audio });
+    console.error('Missing label or audio:', { label, hasAudio: !!audio });
     return res.status(400).json({ error: 'Missing label or audio' });
   }
   // Upload to Supabase Storage
@@ -211,6 +275,27 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
       .insert([{ user_id: userId, recording_id: recInsert.id, full_text: incomingFullText, words: incomingWords }]);
     if (tErr) console.error('Insert provided transcript error:', tErr);
     return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
+  }
+  // Local whisper background transcription
+  if (USE_LOCAL_TRANSCRIBE) {
+    (async () => {
+      try {
+        // Allow storage to propagate and network to stabilize
+        await new Promise(r => setTimeout(r, 1200));
+        console.log(`[bg-transcribe-local] start user=${userId} rec=${recInsert.id}`);
+        const t = await transcribeLocalFromUrl(audio_url);
+        const text = t.full_text || '';
+        const words = Array.isArray(t.words) ? t.words : [];
+        const { error: tErr } = await supabase
+          .from('transcripts')
+          .insert([{ user_id: userId, recording_id: recInsert.id, full_text: text, words }]);
+        if (tErr) console.error('Insert transcript error (local):', tErr);
+        console.log(`[bg-transcribe-local] success user=${userId} rec=${recInsert.id} len=${text.length}`);
+      } catch (e) {
+        console.error('Background transcription error (local):', e);
+      }
+    })();
+    return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
   }
   // Fallback: async transcription via OpenAI if configured
   if (!openai) {
