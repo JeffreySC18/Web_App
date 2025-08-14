@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { API_BASE } from './config';
+import { API_BASE, TRANSCRIBE_TIMEOUT_MS } from './config';
 import AuthForm from './AuthForm';
 import RecordingItem from './RecordingItem';
 // Transcript history toggle
@@ -108,6 +108,7 @@ function App() {
   // Discard current (in-memory) recording & transcript before upload
   const discardCurrent = () => {
     // If still recording, stop streams silently
+  console.log('[ui] using transcribe timeout (ms) =', TRANSCRIBE_TIMEOUT_MS);
     if (recording) {
       try { if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop(); } catch {}
       if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }

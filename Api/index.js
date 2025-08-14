@@ -59,7 +59,15 @@ app.use(express.json());
 const corsOrigin = process.env.NODE_ENV === 'production'
   ? (process.env.CORS_ORIGIN || undefined)
   : (process.env.CORS_ORIGIN || 'http://localhost:3000');
-app.use(cors(corsOrigin ? { origin: corsOrigin } : undefined));
+// Add preflight caching to cut down on OPTIONS requests; does not change POST runtime
+const corsOptions = corsOrigin ? {
+  origin: corsOrigin,
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+  allowedHeaders: ['authorization', 'content-type'],
+  maxAge: 600, // seconds to cache preflight
+  optionsSuccessStatus: 204
+} : undefined;
+app.use(cors(corsOptions));
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
