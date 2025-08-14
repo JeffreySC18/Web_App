@@ -51,7 +51,7 @@ const BUCKET_NAME = 'recordings';
 // (Optional) environment vars for transcription (OpenAI API)
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const TRANSCRIBE_MODE = (process.env.TRANSCRIBE_MODE || 'openai').toLowerCase();
+const TRANSCRIBE_MODE = (process.env.TRANSCRIBE_MODE || 'local').toLowerCase();
 const USE_LOCAL_TRANSCRIBE = TRANSCRIBE_MODE === 'local';
 const openai = (!USE_LOCAL_TRANSCRIBE && process.env.OPENAI_API_KEY)
   ? new OpenAI({
@@ -426,20 +426,40 @@ app.get('/me', authenticateToken, async (req, res) => {
 app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
   const audio = req.file;
   if (!audio) return res.status(400).json({ error: 'Missing audio' });
-  if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY in server environment' });
-  try {
   const size = (audio.buffer && audio.buffer.length) || 0;
-    console.log(`[transcribe] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
+  console.log(`[transcribe] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
+
+  // Local mode: run Python Whisper directly and return JSON
+  if (USE_LOCAL_TRANSCRIBE) {
+    try {
+      const type = (audio.mimetype || '').toLowerCase();
+      let ext = 'webm';
+      if (type.includes('mpeg') || type.includes('mp3')) ext = 'mp3';
+      else if (type.includes('wav')) ext = 'wav';
+      else if (type.includes('ogg')) ext = 'ogg';
+      const result = await transcribeLocalFromBuffer(audio.buffer, ext);
+      const text = result.full_text || '';
+      const words = Array.isArray(result.words) ? result.words : [];
+      console.log(`[transcribe-local] success user=${req.user?.id} textLen=${text.length}`);
+      return res.json({ full_text: text, words });
+    } catch (e) {
+      console.error('Immediate transcription error (local):', e);
+      return res.status(500).json({ error: 'Local transcription failed' });
+    }
+  }
+
+  // OpenAI mode
+  if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY or use local mode' });
+  try {
     let lastErr = null;
-  // Small initial delay to avoid transient upstream resets
-  await new Promise(r => setTimeout(r, 1200));
+    await new Promise(r => setTimeout(r, 1200)); // small initial delay
     for (let i = 0; i < 3; i++) {
       try {
-    // Recreate file each attempt to avoid any single-use stream issues
-    const attemptFile = await toFile(audio.buffer, `live_${Date.now()}_${i}.webm`, { type: audio.mimetype || 'audio/webm' });
-    const transcription = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
-        console.log(`[transcribe] success user=${req.user?.id} textLen=${(transcription.text || '').length}`);
-        return res.json({ full_text: transcription.text || '', words: [] });
+        const attemptFile = await toFile(audio.buffer, `live_${Date.now()}_${i}.webm`, { type: audio.mimetype || 'audio/webm' });
+        const transcription = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
+        const text = transcription.text || '';
+        console.log(`[transcribe] success user=${req.user?.id} textLen=${text.length}`);
+        return res.json({ full_text: text, words: [] });
       } catch (err) {
         lastErr = err;
         console.error(`[transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
