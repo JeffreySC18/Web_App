@@ -16,23 +16,28 @@ const OpenAI = require('openai');
 const { toFile } = require('openai/uploads');
 // Prefer a keep-alive HTTP client for stability to upstream APIs
 let customOpenAIFetch = null;
-try {
-  // undici is bundled with Node 18+, but require may fail depending on env packaging
-  const { Agent, fetch: undiciFetch } = require('undici');
-  const openaiDispatcher = new Agent({
-    keepAliveTimeout: 60_000,
-    keepAliveMaxTimeout: 60_000,
-    connectTimeout: 10_000,
-    connections: 20
-  });
-  customOpenAIFetch = (url, init = {}) => {
-    const needsDuplex = init && Object.prototype.hasOwnProperty.call(init, 'body') && init.body != null && !('duplex' in init);
-    const opts = { ...init, dispatcher: openaiDispatcher, ...(needsDuplex ? { duplex: 'half' } : {}) };
-    return undiciFetch(url, opts);
-  };
-  console.log('OpenAI: using undici fetch with keep-alive');
-} catch (e) {
-  console.warn('OpenAI: undici not available; using default fetch');
+const USE_CUSTOM_OPENAI_FETCH = /^(1|true|yes)$/i.test(process.env.OPENAI_CUSTOM_FETCH || '');
+if (USE_CUSTOM_OPENAI_FETCH) {
+  try {
+    // undici is bundled with Node 18+, but require may fail depending on env packaging
+    const { Agent, fetch: undiciFetch } = require('undici');
+    const openaiDispatcher = new Agent({
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 60_000,
+      connectTimeout: 10_000,
+      connections: 20
+    });
+    customOpenAIFetch = (url, init = {}) => {
+      const needsDuplex = init && Object.prototype.hasOwnProperty.call(init, 'body') && init.body != null && !('duplex' in init);
+      const opts = { ...init, dispatcher: openaiDispatcher, ...(needsDuplex ? { duplex: 'half' } : {}) };
+      return undiciFetch(url, opts);
+    };
+    console.log('OpenAI: using custom undici fetch with keep-alive');
+  } catch (e) {
+    console.warn('OpenAI: undici not available; using default fetch');
+  }
+} else {
+  console.log('OpenAI: using default fetch (custom undici fetch disabled)');
 }
 
 // Read Supabase config from environment for deployment safety
