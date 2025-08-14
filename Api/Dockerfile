@@ -24,14 +24,7 @@ RUN pip3 install --no-cache-dir openai-whisper==20231117 torch --extra-index-url
 
 # Pre-download the default Whisper model to reduce cold-start latency (defaults to 'base')
 ENV WHISPER_MODEL=base
-RUN python3 - << 'PY'
-import os
-import whisper
-model = os.environ.get('WHISPER_MODEL','base')
-print(f"Pre-downloading Whisper model: {model}")
-whisper.load_model(model)
-print("Model ready")
-PY
+RUN python3 -c "import os, whisper; m=os.environ.get('WHISPER_MODEL','base'); print('Pre-downloading Whisper model:', m); whisper.load_model(m); print('Model ready')"
 
 # Expose the port Render will map; Render sets PORT env variable at runtime
 ENV NODE_ENV=production
