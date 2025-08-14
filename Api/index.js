@@ -25,7 +25,11 @@ try {
     connectTimeout: 10_000,
     connections: 20
   });
-  customOpenAIFetch = (url, init = {}) => undiciFetch(url, { ...init, dispatcher: openaiDispatcher });
+  customOpenAIFetch = (url, init = {}) => {
+    const needsDuplex = init && Object.prototype.hasOwnProperty.call(init, 'body') && init.body != null && !('duplex' in init);
+    const opts = { ...init, dispatcher: openaiDispatcher, ...(needsDuplex ? { duplex: 'half' } : {}) };
+    return undiciFetch(url, opts);
+  };
   console.log('OpenAI: using undici fetch with keep-alive');
 } catch (e) {
   console.warn('OpenAI: undici not available; using default fetch');
