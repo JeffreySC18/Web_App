@@ -93,7 +93,12 @@ app.get('/healthz', (_req, res) => {
 
 // Local Whisper helpers
 async function runPython(args, timeoutMs = 180000) {
-  const candidates = [['python', args], ['py', ['-3', ...args]]];
+  // Prefer python3 on Linux containers, then python, then Windows launcher
+  const candidates = [
+    ['python3', args],
+    ['python', args],
+    ['py', ['-3', ...args]]
+  ];
   let lastErr = null;
   for (const [exe, a] of candidates) {
     try {
