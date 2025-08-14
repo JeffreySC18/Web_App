@@ -7,6 +7,22 @@ const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const OpenAI = require('openai');
 const { toFile } = require('openai/uploads');
+// Prefer a keep-alive HTTP client for stability to upstream APIs
+let customOpenAIFetch = null;
+try {
+  // undici is bundled with Node 18+, but require may fail depending on env packaging
+  const { Agent, fetch: undiciFetch } = require('undici');
+  const openaiDispatcher = new Agent({
+    keepAliveTimeout: 60_000,
+    keepAliveMaxTimeout: 60_000,
+    connectTimeout: 10_000,
+    connections: 20
+  });
+  customOpenAIFetch = (url, init = {}) => undiciFetch(url, { ...init, dispatcher: openaiDispatcher });
+  console.log('OpenAI: using undici fetch with keep-alive');
+} catch (e) {
+  console.warn('OpenAI: undici not available; using default fetch');
+}
 
 // Read Supabase config from environment for deployment safety
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -20,7 +36,12 @@ const BUCKET_NAME = 'recordings';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 60000, maxRetries: 2 })
+  ? new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      timeout: 60_000,
+      maxRetries: 2,
+      ...(customOpenAIFetch ? { fetch: customOpenAIFetch } : {})
+    })
   : null;
 
 const app = express();
@@ -198,12 +219,13 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
       // Fetch the public file we just uploaded
       const resp = await fetch(audio_url);
       const arr = await resp.arrayBuffer();
-      const file = await toFile(Buffer.from(arr), `rec_${recInsert.id}.webm`, { type: 'audio/webm' });
+    const baseBuffer = Buffer.from(arr);
       let lastErr = null;
     console.log(`[bg-transcribe] start user=${userId} rec=${recInsert.id}`);
       for (let i = 0; i < 3; i++) {
         try {
-      const t = await openai.audio.transcriptions.create({ file, model: 'whisper-1' });
+      const attemptFile = await toFile(baseBuffer, `rec_${recInsert.id}_${i}.webm`, { type: 'audio/webm' });
+      const t = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
           const text = t.text || '';
           const { error: tErr } = await supabase
             .from('transcripts')
@@ -296,23 +318,18 @@ app.get('/me', authenticateToken, async (req, res) => {
 
 // Immediate transcription endpoint (does not persist recording or transcript)
 app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
-  // Hard timeout so the client doesn't spin forever if upstream stalls
-  res.setTimeout(65000, () => {
-    try { res.status(504).json({ error: 'Transcription timed out' }); } catch {}
-  });
   const audio = req.file;
   if (!audio) return res.status(400).json({ error: 'Missing audio' });
   if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY in server environment' });
   try {
-    const size = (audio.buffer && audio.buffer.length) || 0;
+  const size = (audio.buffer && audio.buffer.length) || 0;
     console.log(`[transcribe] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
-    const file = await toFile(audio.buffer, `live_${Date.now()}.webm`, { type: audio.mimetype || 'audio/webm' });
     let lastErr = null;
     for (let i = 0; i < 3; i++) {
       try {
-        const transcription = await openai.audio.transcriptions.create(
-          { file, model: 'whisper-1' }
-        );
+    // Recreate file each attempt to avoid any single-use stream issues
+    const attemptFile = await toFile(audio.buffer, `live_${Date.now()}_${i}.webm`, { type: audio.mimetype || 'audio/webm' });
+    const transcription = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
         console.log(`[transcribe] success user=${req.user?.id} textLen=${(transcription.text || '').length}`);
         return res.json({ full_text: transcription.text || '', words: [] });
       } catch (err) {
