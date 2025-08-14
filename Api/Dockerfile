@@ -12,7 +12,8 @@ WORKDIR /app
 
 # Copy package manifests and install Node deps first (better layer caching)
 COPY package*.json ./
-RUN npm ci --omit=dev
+# Use npm install to avoid strict lockfile sync requirement during Docker builds
+RUN npm install --omit=dev
 
 # Copy API source
 COPY . .
