@@ -12,33 +12,6 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
-const { toFile } = require('openai/uploads');
-// Prefer a keep-alive HTTP client for stability to upstream APIs
-let customOpenAIFetch = null;
-const USE_CUSTOM_OPENAI_FETCH = /^(1|true|yes)$/i.test(process.env.OPENAI_CUSTOM_FETCH || '');
-if (USE_CUSTOM_OPENAI_FETCH) {
-  try {
-    // undici is bundled with Node 18+, but require may fail depending on env packaging
-    const { Agent, fetch: undiciFetch } = require('undici');
-    const openaiDispatcher = new Agent({
-      keepAliveTimeout: 60_000,
-      keepAliveMaxTimeout: 60_000,
-      connectTimeout: 10_000,
-      connections: 20
-    });
-    customOpenAIFetch = (url, init = {}) => {
-      const needsDuplex = init && Object.prototype.hasOwnProperty.call(init, 'body') && init.body != null && !('duplex' in init);
-      const opts = { ...init, dispatcher: openaiDispatcher, ...(needsDuplex ? { duplex: 'half' } : {}) };
-      return undiciFetch(url, opts);
-    };
-    console.log('OpenAI: using custom undici fetch with keep-alive');
-  } catch (e) {
-    console.warn('OpenAI: undici not available; using default fetch');
-  }
-} else {
-  console.log('OpenAI: using default fetch (custom undici fetch disabled)');
-}
 
 // Read Supabase config from environment for deployment safety
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -48,19 +21,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   // Exit early in hosted environments; in local dev, set .env
 }
 const BUCKET_NAME = 'recordings';
-// (Optional) environment vars for transcription (OpenAI API)
+// Local transcription via Python (wav2vec2)
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const TRANSCRIBE_MODE = (process.env.TRANSCRIBE_MODE || 'openai').toLowerCase();
-const USE_LOCAL_TRANSCRIBE = TRANSCRIBE_MODE === 'local';
-const openai = (!USE_LOCAL_TRANSCRIBE && process.env.OPENAI_API_KEY)
-  ? new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      timeout: 90_000,
-      maxRetries: 3,
-      ...(customOpenAIFetch ? { fetch: customOpenAIFetch } : {})
-    })
-  : null;
+const USE_LOCAL_TRANSCRIBE = true;
 
 const app = express();
 app.use(express.json());
@@ -91,9 +55,9 @@ app.get('/healthz', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
 
-// Local Whisper helpers
+// Local Wav2Vec2 helpers
 async function runPython(args, timeoutMs = 180000) {
-  const candidates = [['python', args], ['py', ['-3', ...args]]];
+  const candidates = [['python3', args], ['python', args], ['py', ['-3', ...args]]];
   let lastErr = null;
   for (const [exe, a] of candidates) {
     try {
@@ -113,16 +77,16 @@ async function runPython(args, timeoutMs = 180000) {
 }
 
 async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
-  const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'whisper-'));
+  const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'w2v2-'));
   const audioPath = path.join(tmpBase, `audio.${ext}`);
   const outPath = path.join(tmpBase, 'out.json');
-  const scriptPath = path.join(__dirname, 'transcription', 'whisper_transcribe.py');
+  const scriptPath = path.join(__dirname, 'transcription', 'wav2vec2_transcribe.py');
   await fsp.writeFile(audioPath, buffer);
   try {
     const r = await runPython([scriptPath, audioPath, outPath]);
     if (r.code !== 0) {
       try { const j = JSON.parse(r.out || '{}'); if (j.error) throw new Error(j.error); } catch {}
-      throw new Error(r.err || r.out || 'whisper failed');
+  throw new Error(r.err || r.out || 'wav2vec2 failed');
     }
     const jsonText = await fsp.readFile(outPath, 'utf-8');
     return JSON.parse(jsonText);
@@ -132,14 +96,14 @@ async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
 }
 
 async function transcribeLocalFromUrl(url) {
-  const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'whisper-'));
+  const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'w2v2-'));
   const outPath = path.join(tmpBase, 'out.json');
-  const scriptPath = path.join(__dirname, 'transcription', 'whisper_transcribe.py');
+  const scriptPath = path.join(__dirname, 'transcription', 'wav2vec2_transcribe.py');
   try {
     const r = await runPython([scriptPath, url, outPath]);
     if (r.code !== 0) {
       try { const j = JSON.parse(r.out || '{}'); if (j.error) throw new Error(j.error); } catch {}
-      throw new Error(r.err || r.out || 'whisper failed');
+  throw new Error(r.err || r.out || 'wav2vec2 failed');
     }
     const jsonText = await fsp.readFile(outPath, 'utf-8');
     return JSON.parse(jsonText);
@@ -163,8 +127,6 @@ function authenticateToken(req, res, next) {
 app.post('/register', async (req, res) => {
   const { username, email, password } = req.body || {};
   const problems = [];
-  // Debug logging (can remove later)
-  console.log('Register attempt raw body:', req.body);
   if (typeof username !== 'string' || !username.trim()) problems.push('Username is required');
   if (typeof email !== 'string' || !email.trim()) problems.push('Email is required');
   if (typeof password !== 'string' || !password) problems.push('Password is required');
@@ -293,7 +255,7 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
     if (tErr) console.error('Insert provided transcript error:', tErr);
     return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
   }
-  // Local whisper background transcription
+  // Local wav2vec2 background transcription
   if (USE_LOCAL_TRANSCRIBE) {
     (async () => {
       try {
@@ -312,46 +274,10 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
         console.error('Background transcription error (local):', e);
       }
     })();
-    return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
+  return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
   }
-  // Fallback: async transcription via OpenAI if configured
-  if (!openai) {
-    return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
-  }
-  (async () => {
-    try {
-  // Allow storage to propagate and network to stabilize
-  await new Promise(r => setTimeout(r, 1200));
-      // Fetch the public file we just uploaded
-      const resp = await fetch(audio_url);
-      const arr = await resp.arrayBuffer();
-    const baseBuffer = Buffer.from(arr);
-      let lastErr = null;
-    console.log(`[bg-transcribe] start user=${userId} rec=${recInsert.id}`);
-      for (let i = 0; i < 3; i++) {
-        try {
-      const attemptFile = await toFile(baseBuffer, `rec_${recInsert.id}_${i}.webm`, { type: 'audio/webm' });
-      const t = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
-          const text = t.text || '';
-          const { error: tErr } = await supabase
-            .from('transcripts')
-            .insert([{ user_id: userId, recording_id: recInsert.id, full_text: text, words: [] }]);
-          if (tErr) console.error('Insert transcript error:', tErr);
-          lastErr = null;
-      console.log(`[bg-transcribe] success user=${userId} rec=${recInsert.id} len=${text.length}`);
-          break;
-        } catch (err) {
-          lastErr = err;
-      console.error(`[bg-transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
-          if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
-        }
-      }
-      if (lastErr) console.error('Background transcription error (retries failed):', lastErr);
-    } catch (e) {
-      console.error('Background transcription error:', e);
-    }
-  })();
-  res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
+  // No external fallback
+  return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
 });
 
 // Get all recordings for the logged-in user
@@ -426,31 +352,22 @@ app.get('/me', authenticateToken, async (req, res) => {
 app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, res) => {
   const audio = req.file;
   if (!audio) return res.status(400).json({ error: 'Missing audio' });
-  if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY in server environment' });
   try {
-  const size = (audio.buffer && audio.buffer.length) || 0;
-    console.log(`[transcribe] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
-    let lastErr = null;
-  // Small initial delay to avoid transient upstream resets
-  await new Promise(r => setTimeout(r, 1200));
-    for (let i = 0; i < 3; i++) {
-      try {
-    // Recreate file each attempt to avoid any single-use stream issues
-    const attemptFile = await toFile(audio.buffer, `live_${Date.now()}_${i}.webm`, { type: audio.mimetype || 'audio/webm' });
-    const transcription = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
-        console.log(`[transcribe] success user=${req.user?.id} textLen=${(transcription.text || '').length}`);
-        return res.json({ full_text: transcription.text || '', words: [] });
-      } catch (err) {
-        lastErr = err;
-        console.error(`[transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
-        if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
-      }
-    }
-    console.error('Immediate transcription error (retries failed):', lastErr);
-    return res.status(502).json({ error: 'Upstream transcription error' });
+    const size = (audio.buffer && audio.buffer.length) || 0;
+    console.log(`[transcribe-local-w2v2] received user=${req.user?.id} bytes=${size} type=${audio.mimetype}`);
+    const type = (audio.mimetype || '').toLowerCase();
+    let ext = 'webm';
+    if (type.includes('mpeg') || type.includes('mp3')) ext = 'mp3';
+    else if (type.includes('wav')) ext = 'wav';
+    else if (type.includes('ogg')) ext = 'ogg';
+    const result = await transcribeLocalFromBuffer(audio.buffer, ext);
+    const text = result.full_text || '';
+    const words = Array.isArray(result.words) ? result.words : [];
+    console.log(`[transcribe-local-w2v2] success user=${req.user?.id} textLen=${text.length}`);
+    return res.json({ full_text: text, words });
   } catch (e) {
-    console.error('Immediate transcription error:', e);
-    return res.status(500).json({ error: 'Server error during transcription' });
+    console.error('Immediate transcription error (local w2v2):', e);
+    return res.status(500).json({ error: 'Local transcription failed' });
   }
 });
 

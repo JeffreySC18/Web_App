@@ -2,10 +2,9 @@ services:
   - type: web
     name: web-app-api
     rootDir: Api
-    env: node
+    env: docker
     plan: free
-    buildCommand: npm ci
-    startCommand: npm start
+    dockerfilePath: Dockerfile
     envVars:
       - key: SUPABASE_URL
         sync: false
