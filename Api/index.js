@@ -88,10 +88,7 @@ const corsOptions = {
   optionsSuccessStatus: 204
 };
 app.use(cors(corsOptions));
-// Ensure OPTIONS is handled for all routes
-// Express 5 uses path-to-regexp v6; use patterns compatible with v6
-app.options('/', cors(corsOptions));
-app.options('/:path(*)', cors(corsOptions));
+// Preflight requests are handled automatically by the CORS middleware above
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
