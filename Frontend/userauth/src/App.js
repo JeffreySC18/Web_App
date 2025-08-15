@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { API_BASE, TRANSCRIBE_TIMEOUT_MS } from './config';
+import { API_BASE, TRANSCRIBE_TIMEOUT_MS, BACKGROUND_ONLY } from './config';
 import AuthForm from './AuthForm';
 import RecordingItem from './RecordingItem';
 // Transcript history toggle
@@ -46,6 +46,7 @@ function App() {
   const [pwUpdating, setPwUpdating] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState('');
   const [expandedRecordingIds, setExpandedRecordingIds] = useState(new Set());
+  const [bgToast, setBgToast] = useState({ show: false });
 
   const toggleExpand = (id) => {
     setExpandedRecordingIds(prev => {
@@ -79,12 +80,23 @@ function App() {
       streamRef.current = stream;
       const recorder = new window.MediaRecorder(stream);
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      recorder.onstop = () => {
+  recorder.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         recordedBlobRef.current = blob;
         setAudioURL(URL.createObjectURL(blob));
         chunksRef.current = [];
     stopTimer();
+        // Background-only: auto-upload and poll
+        if (BACKGROUND_ONLY) {
+          try {
+            setLabel(label => label || `Recording ${new Date().toLocaleString()}`);
+            // slight delay to let state update
+            await new Promise(r => setTimeout(r, 50));
+    setBgToast({ show: true });
+            await uploadRecording();
+            setShowTranscripts(true);
+          } catch {}
+        }
       };
       setMediaRecorder(recorder);
       chunksRef.current = [];
@@ -160,22 +172,26 @@ function App() {
         // If transcript processing flagged, poll transcripts
         if (data.transcript_processing) {
           setShowTranscripts(true);
-          let attempts = 0;
+          // Exponential backoff polling up to ~90s total
+          let attempt = 0;
           const poll = async () => {
-            attempts++;
+            attempt++;
             try {
               const resT = await fetch(`${API_BASE}/transcripts`, { headers: { 'Authorization': `Bearer ${token}` } });
               const arr = await resT.json();
               if (Array.isArray(arr)) setTranscripts(arr);
               const found = Array.isArray(arr) && arr.some(t => t.recording_id === data.recording_id);
-              if (!found && attempts < 15) setTimeout(poll, 4000);
+              if (found) { setBgToast({ show: false }); return; }
             } catch {}
+            const delay = Math.min(1000 * Math.pow(1.6, attempt), 8000);
+            if (attempt < 20) setTimeout(poll, delay);
           };
-          setTimeout(poll, 4000);
+          setTimeout(poll, 1000);
         } else {
           // Immediate transcript already saved; refresh history once
           setShowTranscripts(true);
           fetchTranscripts();
+          setBgToast({ show: false });
         }
       }
     } catch (err) {
@@ -248,6 +264,7 @@ function App() {
   }, [token, fetchRecordings]);
 
   const runImmediateTranscription = useCallback( async () => {
+    if (BACKGROUND_ONLY) return; // disabled
     if (!audioURL) return;
     setTranscribing(true);
     setTranscribeError('');
@@ -285,6 +302,7 @@ function App() {
 
   // Trigger immediate transcription when audioURL becomes available
   useEffect(() => {
+    if (BACKGROUND_ONLY) return; // disabled
     if (audioURL && token) runImmediateTranscription();
   }, [audioURL, token, runImmediateTranscription]);
 
@@ -326,6 +344,13 @@ function App() {
             onClick={() => setActiveTab('settings')}
           >Settings</button>
         </div>
+        {bgToast.show && (
+          <div style={{ position: 'fixed', bottom: 16, left: '50%', transform: 'translateX(-50%)', background: '#111827', color: 'white', padding: '10px 14px', borderRadius: 10, boxShadow: '0 4px 10px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', gap: 10, zIndex: 9999 }}>
+            <span>Transcribing in background…</span>
+            <button className="btn btn-outline btn-sm" onClick={() => { setActiveTab('library'); fetchTranscripts(); }}>Go to Library</button>
+            <button className="btn btn-outline btn-sm" onClick={() => setBgToast({ show: false })}>Dismiss</button>
+          </div>
+        )}
   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
     <button className="btn btn-outline btn-sm" onClick={() => { setToken(null); setCurrentUser(null); setShowLogin(true); }}>Logout</button>
   </div>
@@ -409,7 +434,10 @@ function App() {
         )}
         {activeTab === 'library' && (
           <div style={{ marginTop: 24, width: '100%' }}>
-            <h2 style={{ color: '#6a82fb', marginBottom: 16 }}>Your Library</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h2 style={{ color: '#6a82fb', margin: 0 }}>Your Library</h2>
+              <button className="btn btn-outline btn-sm" onClick={() => { fetchRecordings(); fetchTranscripts(); }}>Refresh</button>
+            </div>
             {recordings.length === 0 && <p>No recordings yet.</p>}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {recordings.map(rec => {
