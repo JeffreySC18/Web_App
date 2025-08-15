@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { API_BASE, TRANSCRIBE_TIMEOUT_MS, BACKGROUND_ONLY } from './config';
+import { API_BASE, BACKGROUND_ONLY } from './config';
 import AuthForm from './AuthForm';
-import RecordingItem from './RecordingItem';
 // Transcript history toggle
 import './App.css';
 
@@ -120,7 +119,6 @@ function App() {
   // Discard current (in-memory) recording & transcript before upload
   const discardCurrent = () => {
     // If still recording, stop streams silently
-  console.log('[ui] using transcribe timeout (ms) =', TRANSCRIBE_TIMEOUT_MS);
     if (recording) {
       try { if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop(); } catch {}
       if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
@@ -270,7 +268,6 @@ function App() {
     setTranscribeError('');
     try {
       const blob = recordedBlobRef.current || (await fetch(audioURL).then(r => r.blob()));
-      console.log('[ui] starting immediate transcription, blob size =', blob.size);
       const formData = new FormData();
       formData.append('audio', blob, 'temp.webm');
   // Add a client-side timeout to avoid indefinite spinner
@@ -283,7 +280,6 @@ function App() {
     signal: controller.signal
       });
   clearTimeout(t);
-      console.log('[ui] /transcribe response status =', res.status);
       const data = await res.json();
       if (res.ok && data.full_text !== undefined) {
         setTranscriptText(data.full_text);

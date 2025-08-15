@@ -12,33 +12,6 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
-const { toFile } = require('openai/uploads');
-// Prefer a keep-alive HTTP client for stability to upstream APIs
-let customOpenAIFetch = null;
-const USE_CUSTOM_OPENAI_FETCH = /^(1|true|yes)$/i.test(process.env.OPENAI_CUSTOM_FETCH || '');
-if (USE_CUSTOM_OPENAI_FETCH) {
-  try {
-    // undici is bundled with Node 18+, but require may fail depending on env packaging
-    const { Agent, fetch: undiciFetch } = require('undici');
-    const openaiDispatcher = new Agent({
-      keepAliveTimeout: 60_000,
-      keepAliveMaxTimeout: 60_000,
-      connectTimeout: 10_000,
-      connections: 20
-    });
-    customOpenAIFetch = (url, init = {}) => {
-      const needsDuplex = init && Object.prototype.hasOwnProperty.call(init, 'body') && init.body != null && !('duplex' in init);
-      const opts = { ...init, dispatcher: openaiDispatcher, ...(needsDuplex ? { duplex: 'half' } : {}) };
-      return undiciFetch(url, opts);
-    };
-    console.log('OpenAI: using custom undici fetch with keep-alive');
-  } catch (e) {
-    console.warn('OpenAI: undici not available; using default fetch');
-  }
-} else {
-  console.log('OpenAI: using default fetch (custom undici fetch disabled)');
-}
 
 // Read Supabase config from environment for deployment safety
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -48,19 +21,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   // Exit early in hosted environments; in local dev, set .env
 }
 const BUCKET_NAME = 'recordings';
-// (Optional) environment vars for transcription (OpenAI API)
+// Transcription is local-only via Python Whisper
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const TRANSCRIBE_MODE = (process.env.TRANSCRIBE_MODE || 'local').toLowerCase();
-const USE_LOCAL_TRANSCRIBE = TRANSCRIBE_MODE === 'local';
-const openai = (!USE_LOCAL_TRANSCRIBE && process.env.OPENAI_API_KEY)
-  ? new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      timeout: 90_000,
-      maxRetries: 3,
-      ...(customOpenAIFetch ? { fetch: customOpenAIFetch } : {})
-    })
-  : null;
+const USE_LOCAL_TRANSCRIBE = true;
 
 const app = express();
 app.use(express.json());
@@ -180,8 +144,7 @@ function authenticateToken(req, res, next) {
 app.post('/register', async (req, res) => {
   const { username, email, password } = req.body || {};
   const problems = [];
-  // Debug logging (can remove later)
-  console.log('Register attempt raw body:', req.body);
+  // Basic validation only; avoid logging user payloads
   if (typeof username !== 'string' || !username.trim()) problems.push('Username is required');
   if (typeof email !== 'string' || !email.trim()) problems.push('Email is required');
   if (typeof password !== 'string' || !password) problems.push('Password is required');
@@ -331,44 +294,8 @@ app.post('/recordings', authenticateToken, upload.single('audio'), async (req, r
     })();
     return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
   }
-  // Fallback: async transcription via OpenAI if configured
-  if (!openai) {
-    return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
-  }
-  (async () => {
-    try {
-  // Allow storage to propagate and network to stabilize
-  await new Promise(r => setTimeout(r, 1200));
-      // Fetch the public file we just uploaded
-      const resp = await fetch(audio_url);
-      const arr = await resp.arrayBuffer();
-    const baseBuffer = Buffer.from(arr);
-      let lastErr = null;
-    console.log(`[bg-transcribe] start user=${userId} rec=${recInsert.id}`);
-      for (let i = 0; i < 3; i++) {
-        try {
-      const attemptFile = await toFile(baseBuffer, `rec_${recInsert.id}_${i}.webm`, { type: 'audio/webm' });
-      const t = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
-          const text = t.text || '';
-          const { error: tErr } = await supabase
-            .from('transcripts')
-            .insert([{ user_id: userId, recording_id: recInsert.id, full_text: text, words: [] }]);
-          if (tErr) console.error('Insert transcript error:', tErr);
-          lastErr = null;
-      console.log(`[bg-transcribe] success user=${userId} rec=${recInsert.id} len=${text.length}`);
-          break;
-        } catch (err) {
-          lastErr = err;
-      console.error(`[bg-transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
-          if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
-        }
-      }
-      if (lastErr) console.error('Background transcription error (retries failed):', lastErr);
-    } catch (e) {
-      console.error('Background transcription error:', e);
-    }
-  })();
-  res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: true });
+  // No OpenAI fallback in local-only mode
+  return res.json({ success: true, audio_url, recording_id: recInsert.id, transcript_processing: false });
 });
 
 // Get all recordings for the logged-in user
@@ -465,30 +392,8 @@ app.post('/transcribe', authenticateToken, upload.single('audio'), async (req, r
     }
   }
 
-  // OpenAI mode
-  if (!openai) return res.status(501).json({ error: 'Transcription not configured', details: 'Set OPENAI_API_KEY or use local mode' });
-  try {
-    let lastErr = null;
-    await new Promise(r => setTimeout(r, 1200)); // small initial delay
-    for (let i = 0; i < 3; i++) {
-      try {
-        const attemptFile = await toFile(audio.buffer, `live_${Date.now()}_${i}.webm`, { type: audio.mimetype || 'audio/webm' });
-        const transcription = await openai.audio.transcriptions.create({ file: attemptFile, model: 'whisper-1' });
-        const text = transcription.text || '';
-        console.log(`[transcribe] success user=${req.user?.id} textLen=${text.length}`);
-        return res.json({ full_text: text, words: [] });
-      } catch (err) {
-        lastErr = err;
-        console.error(`[transcribe] attempt ${i + 1} failed:`, err?.code || err?.message || err);
-        if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
-      }
-    }
-    console.error('Immediate transcription error (retries failed):', lastErr);
-    return res.status(502).json({ error: 'Upstream transcription error' });
-  } catch (e) {
-    console.error('Immediate transcription error:', e);
-    return res.status(500).json({ error: 'Server error during transcription' });
-  }
+  // No OpenAI mode; local-only enforced at server level
+  return res.status(501).json({ error: 'Immediate transcription disabled', details: 'Server is configured for background/local transcription only.' });
 });
 
 // Transcripts list for user
@@ -616,7 +521,7 @@ app.put('/account/password', authenticateToken, async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  const mode = USE_LOCAL_TRANSCRIBE ? 'local (Python Whisper)' : (openai ? 'openai' : 'openai (not configured)');
+  const mode = 'local (Python Whisper)';
   console.log(`API server running on http://localhost:${PORT}`);
   console.log(`Transcription mode: ${mode}`);
 });
