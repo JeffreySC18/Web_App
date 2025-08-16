@@ -1,9 +1,9 @@
 FROM node:18-bullseye
 
-# Install system dependencies: python3, pip, ffmpeg, curl
+# Install system dependencies: python3, pip, ffmpeg, curl, libsndfile1 (for soundfile)
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv ffmpeg curl \
+  python3 python3-pip python3-venv ffmpeg curl libsndfile1 \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/Api
@@ -16,8 +16,8 @@ RUN npm install --omit=dev
 # Python deps for local transcription (wav2vec2 + torch CPU)
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
   && python3 -m pip install --no-cache-dir \
-    torch==2.2.2+cpu \
-    --find-links https://download.pytorch.org/whl/cpu \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.2.2 \
   && python3 -m pip install --no-cache-dir \
     transformers==4.41.2 \
     soundfile==0.12.1 \
