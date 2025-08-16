@@ -25,6 +25,7 @@ const BUCKET_NAME = 'recordings';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const USE_LOCAL_TRANSCRIBE = true;
+const TRANSCRIBE_ENGINE = (process.env.TRANSCRIBE_ENGINE || 'wav2vec2').toLowerCase();
 
 const app = express();
 app.use(express.json());
@@ -73,7 +74,16 @@ async function runPython(args, timeoutMs = 180000) {
   let lastErr = null;
   for (const [exe, a] of candidates) {
     try {
-      const proc = spawn(exe, a, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn(exe, a, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          OMP_NUM_THREADS: '1',
+          MKL_NUM_THREADS: '1',
+          NUMEXPR_NUM_THREADS: '1',
+          TOKENIZERS_PARALLELISM: 'false'
+        }
+      });
       let out = '', err = '';
       proc.stdout.on('data', d => { out += d.toString(); });
       proc.stderr.on('data', d => { err += d.toString(); });
@@ -92,7 +102,7 @@ async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
   const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'w2v2-'));
   const audioPath = path.join(tmpBase, `audio.${ext}`);
   const outPath = path.join(tmpBase, 'out.json');
-  const scriptPath = path.join(__dirname, 'transcription', 'wav2vec2_transcribe.py');
+  const scriptPath = path.join(__dirname, 'transcription', TRANSCRIBE_ENGINE === 'vosk' ? 'vosk_transcribe.py' : 'wav2vec2_transcribe.py');
   await fsp.writeFile(audioPath, buffer);
   try {
     const r = await runPython([scriptPath, audioPath, outPath]);
@@ -110,7 +120,7 @@ async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
 async function transcribeLocalFromUrl(url) {
   const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'w2v2-'));
   const outPath = path.join(tmpBase, 'out.json');
-  const scriptPath = path.join(__dirname, 'transcription', 'wav2vec2_transcribe.py');
+  const scriptPath = path.join(__dirname, 'transcription', TRANSCRIBE_ENGINE === 'vosk' ? 'vosk_transcribe.py' : 'wav2vec2_transcribe.py');
   try {
     const r = await runPython([scriptPath, url, outPath]);
     if (r.code !== 0) {

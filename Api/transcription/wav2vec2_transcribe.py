@@ -82,11 +82,14 @@ def main():
         if sr != 16000:
             raise RuntimeError(f"unexpected sample rate: {sr}")
 
+        torch.set_num_threads(1)
         processor = Wav2Vec2Processor.from_pretrained(MODEL_ID)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID)
+        model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID, low_cpu_mem_usage=True)
         with torch.no_grad():
             inputs = processor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
-            logits = model(inputs.input_values).logits
+            # Ensure tensors on CPU and free mem as soon as possible
+            input_values = inputs.input_values.contiguous()
+            logits = model(input_values).logits
             pred_ids = torch.argmax(logits, dim=-1)
             text = processor.batch_decode(pred_ids)[0]
         full_text = text.strip()
