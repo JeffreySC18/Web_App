@@ -19,7 +19,8 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip \
     --index-url https://download.pytorch.org/whl/cpu \
     torch==2.2.2 \
   && python3 -m pip install --no-cache-dir \
-    transformers==4.41.2 \
+     transformers==4.41.2 \
+     accelerate==0.33.0 \
     soundfile==0.12.1 \
   numpy==1.26.4 \
   vosk==0.3.45

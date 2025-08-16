@@ -84,7 +84,11 @@ def main():
 
         torch.set_num_threads(1)
         processor = Wav2Vec2Processor.from_pretrained(MODEL_ID)
-        model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID, low_cpu_mem_usage=True)
+        try:
+            model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID, low_cpu_mem_usage=True)
+        except Exception:
+            # Fallback if accelerate isn't available or model doesn't support the flag
+            model = Wav2Vec2ForCTC.from_pretrained(MODEL_ID)
         with torch.no_grad():
             inputs = processor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
             # Ensure tensors on CPU and free mem as soon as possible
