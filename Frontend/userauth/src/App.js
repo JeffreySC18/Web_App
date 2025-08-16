@@ -20,6 +20,11 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [audioURL, setAudioURL] = useState(null);
+  const [supportedMime, setSupportedMime] = useState('');
+  const chosenMimeRef = useRef('');
+  const [micDevices, setMicDevices] = useState([]);
+  const [selectedMicId, setSelectedMicId] = useState('');
+  const [micLevel, setMicLevel] = useState(0); // 0..1 normalized peak
   const [transcriptText, setTranscriptText] = useState('');
   const [transcriptWords, setTranscriptWords] = useState([]); // word-level timings
   const [transcribing, setTranscribing] = useState(false);
@@ -60,6 +65,30 @@ function App() {
   const streamRef = useRef(null);
   const timerRef = useRef(null);
   const recordedBlobRef = useRef(null);
+  const audioCtxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const levelAnimRef = useRef(null);
+
+  const pickSupportedMime = useCallback(() => {
+    if (typeof window === 'undefined' || !window.MediaRecorder) return '';
+    const types = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+      'audio/mp4'
+    ];
+    for (const t of types) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  }, []);
+
+  useEffect(() => {
+    const t = pickSupportedMime();
+    setSupportedMime(t);
+    chosenMimeRef.current = t || '';
+  }, [pickSupportedMime]);
   const startTimer = () => {
     setElapsedTime(0);
     if (timerRef.current) clearInterval(timerRef.current);
@@ -68,6 +97,17 @@ function App() {
       setElapsedTime(((Date.now() - start) / 1000));
     }, 100);
   };
+
+  const stopMeters = () => {
+    if (levelAnimRef.current) cancelAnimationFrame(levelAnimRef.current);
+    levelAnimRef.current = null;
+    analyserRef.current = null;
+    if (audioCtxRef.current) {
+      try { audioCtxRef.current.close(); } catch {}
+      audioCtxRef.current = null;
+    }
+    setMicLevel(0);
+  };
   const stopTimer = () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
   
   const startRecording = async () => {
@@ -75,21 +115,64 @@ function App() {
     setLabel('');
   startTimer();
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const constraints = {
+        audio: {
+          deviceId: selectedMicId ? { exact: selectedMicId } : undefined,
+          channelCount: 1,
+          noiseSuppression: true,
+          echoCancellation: true,
+          autoGainControl: false
+        }
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // Enumerate devices after permission so labels are available
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        setMicDevices(devices.filter(d => d.kind === 'audioinput'));
+      } catch {}
       streamRef.current = stream;
-      const recorder = new window.MediaRecorder(stream);
+      // Choose a supported mime type
+      const mimeType = chosenMimeRef.current;
+      const opts = mimeType ? { mimeType, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 };
+      const recorder = new window.MediaRecorder(stream, opts);
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const blobType = chosenMimeRef.current || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: blobType });
         recordedBlobRef.current = blob;
         setAudioURL(URL.createObjectURL(blob));
         chunksRef.current = [];
     stopTimer();
+        stopMeters();
       };
       setMediaRecorder(recorder);
       chunksRef.current = [];
       recorder.start(100); // timeslice for more frequent dataavailable
       setRecording(true);
+
+      // Setup a simple level meter so user sees input activity
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        audioCtxRef.current = new AudioCtx();
+        const src = audioCtxRef.current.createMediaStreamSource(stream);
+        analyserRef.current = audioCtxRef.current.createAnalyser();
+        analyserRef.current.fftSize = 2048;
+        src.connect(analyserRef.current);
+        const buf = new Uint8Array(analyserRef.current.fftSize);
+        const tick = () => {
+          if (!analyserRef.current) return;
+          analyserRef.current.getByteTimeDomainData(buf);
+          // Compute peak deviation from center (128)
+          let peak = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const v = Math.abs(buf[i] - 128);
+            if (v > peak) peak = v;
+          }
+          setMicLevel(Math.min(1, peak / 128));
+          levelAnimRef.current = requestAnimationFrame(tick);
+        };
+        levelAnimRef.current = requestAnimationFrame(tick);
+      } catch {}
     } catch (err) {
       alert('Microphone access denied or not available.');
     }
@@ -102,6 +185,7 @@ function App() {
       streamRef.current = null;
     }
     stopTimer();
+  stopMeters();
     setRecording(false);
   };
 
@@ -121,6 +205,7 @@ function App() {
     setLabel('');
     setRecording(false);
     stopTimer();
+  stopMeters();
   };
 
   useEffect(() => {
@@ -137,7 +222,8 @@ function App() {
     try {
   const blob = recordedBlobRef.current || (await fetch(audioURL).then(r => r.blob()));
       const formData = new FormData();
-      formData.append('audio', blob, 'recording.webm');
+  const ext = (blob && blob.type && blob.type.includes('ogg')) ? 'ogg' : (blob && blob.type && blob.type.includes('mp4')) ? 'mp4' : 'webm';
+  formData.append('audio', blob, `recording.${ext}`);
       formData.append('label', label);
       if (transcriptText) formData.append('full_text', transcriptText);
       if (transcriptWords && transcriptWords.length > 0) {
@@ -331,6 +417,18 @@ function App() {
   </div>
   {activeTab === 'record' && (
   <div style={{ marginTop: 16 }} className="btn-group">
+          {micDevices.length > 0 && (
+            <div style={{ marginBottom: 8, width: '100%', textAlign: 'left' }}>
+              <label htmlFor="mic-sel" style={{ fontSize: 12, color: '#555', marginRight: 6 }}>Microphone:</label>
+              <select id="mic-sel" value={selectedMicId} onChange={e => setSelectedMicId(e.target.value)}>
+                <option value="">Default</option>
+                {micDevices.map(d => (
+                  <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
+                ))}
+              </select>
+              <span style={{ marginLeft: 10, fontSize: 12, color: '#6b7280' }}>Format: {supportedMime || 'default'}</span>
+            </div>
+          )}
           <button className="btn btn-lg" onClick={startRecording} disabled={recording}>
             {recording ? 'Recording...' : 'Add Recording'}
           </button>
@@ -347,6 +445,9 @@ function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#444' }}>
                   <span className="record-dot" />
                   <span>Recording...</span>
+                </div>
+                <div style={{ width: '100%', height: 8, background: '#e5e7eb', borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.round(micLevel * 100)}%`, height: '100%', background: micLevel > 0.2 ? '#22c55e' : '#9ca3af' }} />
                 </div>
                 <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '1px', color: '#6a82fb' }}>{elapsedTime.toFixed(1)}s</div>
               </div>
