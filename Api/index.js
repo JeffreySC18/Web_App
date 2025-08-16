@@ -28,18 +28,30 @@ const USE_LOCAL_TRANSCRIBE = true;
 
 const app = express();
 app.use(express.json());
-// CORS: allow localhost in dev; restrict via CORS_ORIGIN in production
-const corsOrigin = process.env.NODE_ENV === 'production'
-  ? (process.env.CORS_ORIGIN || undefined)
-  : (process.env.CORS_ORIGIN || 'http://localhost:3000');
-// Add preflight caching to cut down on OPTIONS requests; does not change POST runtime
-const corsOptions = corsOrigin ? {
-  origin: corsOrigin,
+// CORS: allow multiple origins via CORS_ORIGIN (comma-separated),
+// default to localhost in dev. In prod, if not set, allow all.
+const rawCors = (process.env.CORS_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000'));
+const allowedOrigins = rawCors
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow non-browser or same-origin requests without Origin header
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.length === 0) {
+      // No list set => allow all (renders Access-Control-Allow-Origin: *)
+      return callback(null, true);
+    }
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // For subdomain or preview flexibility, you can widen this check if needed
+    return callback(new Error(`CORS: Origin not allowed: ${origin}`), false);
+  },
   methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
   allowedHeaders: ['authorization', 'content-type'],
-  maxAge: 600, // seconds to cache preflight
+  maxAge: 600,
   optionsSuccessStatus: 204
-} : undefined;
+};
 app.use(cors(corsOptions));
 
 const storage = multer.memoryStorage();
