@@ -43,7 +43,7 @@ def ffmpeg_to_wav16k(src_path: str) -> str:
     os.close(fd)
     # Convert to mono 16k PCM WAV
     cmd = [
-        'ffmpeg', '-y', '-i', src_path,
+    'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', src_path,
         '-ac', '1', '-ar', '16000',
         '-f', 'wav', wav_path
     ]
@@ -60,6 +60,12 @@ def load_audio(path_wav: str):
         audio = np.mean(audio, axis=1)
     if audio.dtype != np.float32:
         audio = audio.astype(np.float32)
+    # Simple peak normalization to improve recognition on quiet inputs
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak > 1e-6:
+        target = 0.8
+        if peak < target:
+            audio = audio * (target / max(peak, 1e-6))
     return audio, sr
 
 

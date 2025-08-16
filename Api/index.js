@@ -26,6 +26,7 @@ const BUCKET_NAME = 'recordings';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const USE_LOCAL_TRANSCRIBE = true;
 const TRANSCRIBE_ENGINE = (process.env.TRANSCRIBE_ENGINE || 'wav2vec2').toLowerCase();
+const FALLBACK_TO_VOSK = /^(1|true|yes)$/i.test(process.env.TRANSCRIBE_FALLBACK_TO_VOSK || '');
 
 const app = express();
 app.use(express.json());
@@ -98,20 +99,39 @@ async function runPython(args, timeoutMs = 180000) {
   throw lastErr || new Error('python not found');
 }
 
+function engineScript(engine) {
+  return path.join(__dirname, 'transcription', engine === 'vosk' ? 'vosk_transcribe.py' : 'wav2vec2_transcribe.py');
+}
+
 async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
   const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'w2v2-'));
   const audioPath = path.join(tmpBase, `audio.${ext}`);
   const outPath = path.join(tmpBase, 'out.json');
-  const scriptPath = path.join(__dirname, 'transcription', TRANSCRIBE_ENGINE === 'vosk' ? 'vosk_transcribe.py' : 'wav2vec2_transcribe.py');
+  const primaryScript = engineScript(TRANSCRIBE_ENGINE);
+  const fallbackScript = FALLBACK_TO_VOSK && TRANSCRIBE_ENGINE !== 'vosk' ? engineScript('vosk') : null;
   await fsp.writeFile(audioPath, buffer);
   try {
-    const r = await runPython([scriptPath, audioPath, outPath]);
+    let r = await runPython([primaryScript, audioPath, outPath]);
     if (r.code !== 0) {
       try { const j = JSON.parse(r.out || '{}'); if (j.error) throw new Error(j.error); } catch {}
-  throw new Error(r.err || r.out || 'wav2vec2 failed');
+      throw new Error(r.err || r.out || 'transcribe failed');
     }
     const jsonText = await fsp.readFile(outPath, 'utf-8');
-    return JSON.parse(jsonText);
+    let result = JSON.parse(jsonText);
+    if (fallbackScript && (!result.full_text || !result.full_text.trim())) {
+      // Try fallback once
+      try {
+        console.log('[transcribe-fallback] primary empty, trying vosk');
+        r = await runPython([fallbackScript, audioPath, outPath]);
+        if (r.code === 0) {
+          const t2 = await fsp.readFile(outPath, 'utf-8');
+          result = JSON.parse(t2);
+        }
+      } catch (e) {
+        console.warn('[transcribe-fallback] vosk failed:', e?.message || e);
+      }
+    }
+    return result;
   } finally {
     try { await fsp.rm(tmpBase, { recursive: true, force: true }); } catch {}
   }
@@ -120,15 +140,30 @@ async function transcribeLocalFromBuffer(buffer, ext = 'webm') {
 async function transcribeLocalFromUrl(url) {
   const tmpBase = await fsp.mkdtemp(path.join(os.tmpdir(), 'w2v2-'));
   const outPath = path.join(tmpBase, 'out.json');
-  const scriptPath = path.join(__dirname, 'transcription', TRANSCRIBE_ENGINE === 'vosk' ? 'vosk_transcribe.py' : 'wav2vec2_transcribe.py');
+  const primaryScript = engineScript(TRANSCRIBE_ENGINE);
+  const fallbackScript = FALLBACK_TO_VOSK && TRANSCRIBE_ENGINE !== 'vosk' ? engineScript('vosk') : null;
   try {
-    const r = await runPython([scriptPath, url, outPath]);
+    let r = await runPython([primaryScript, url, outPath]);
     if (r.code !== 0) {
       try { const j = JSON.parse(r.out || '{}'); if (j.error) throw new Error(j.error); } catch {}
-  throw new Error(r.err || r.out || 'wav2vec2 failed');
+      throw new Error(r.err || r.out || 'transcribe failed');
     }
     const jsonText = await fsp.readFile(outPath, 'utf-8');
-    return JSON.parse(jsonText);
+    let result = JSON.parse(jsonText);
+    if (fallbackScript && (!result.full_text || !result.full_text.trim())) {
+      // Try fallback once
+      try {
+        console.log('[transcribe-fallback] primary empty, trying vosk');
+        r = await runPython([fallbackScript, url, outPath]);
+        if (r.code === 0) {
+          const t2 = await fsp.readFile(outPath, 'utf-8');
+          result = JSON.parse(t2);
+        }
+      } catch (e) {
+        console.warn('[transcribe-fallback] vosk failed:', e?.message || e);
+      }
+    }
+    return result;
   } finally {
     try { await fsp.rm(tmpBase, { recursive: true, force: true }); } catch {}
   }
