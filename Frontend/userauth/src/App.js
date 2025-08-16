@@ -416,26 +416,34 @@ function App() {
     <button className="btn btn-outline btn-sm" onClick={() => { setToken(null); setCurrentUser(null); setShowLogin(true); }}>Logout</button>
   </div>
   {activeTab === 'record' && (
-  <div style={{ marginTop: 16 }} className="btn-group">
-          {micDevices.length > 0 && (
-            <div style={{ marginBottom: 8, width: '100%', textAlign: 'left' }}>
-              <label htmlFor="mic-sel" style={{ fontSize: 12, color: '#555', marginRight: 6 }}>Microphone:</label>
-              <select id="mic-sel" value={selectedMicId} onChange={e => setSelectedMicId(e.target.value)}>
-                <option value="">Default</option>
-                {micDevices.map(d => (
-                  <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
-                ))}
-              </select>
-              <span style={{ marginLeft: 10, fontSize: 12, color: '#6b7280' }}>Format: {supportedMime || 'default'}</span>
-            </div>
-          )}
-          <button className="btn btn-lg" onClick={startRecording} disabled={recording}>
-            {recording ? 'Recording...' : 'Add Recording'}
-          </button>
-          <button className="btn btn-secondary btn-lg" onClick={stopRecording} disabled={!recording}>
-            Stop
-          </button>
+    <>
+      {micDevices.length > 0 && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <label htmlFor="mic-sel" style={{ fontSize: 12, color: '#555' }}>Microphone:</label>
+          <select
+            id="mic-sel"
+            value={selectedMicId}
+            onChange={e => setSelectedMicId(e.target.value)}
+            style={{ width: 260, maxWidth: '100%' }}
+            title={micDevices.find(d => d.deviceId === selectedMicId)?.label || ''}
+          >
+            <option value="">Default</option>
+            {micDevices.map(d => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 12, color: '#6b7280' }}>Format: {supportedMime || 'default'}</span>
         </div>
+      )}
+      <div style={{ marginTop: 12 }} className="btn-group">
+        <button className="btn btn-lg" onClick={startRecording} disabled={recording}>
+            {recording ? 'Recording...' : 'Add Recording'}
+        </button>
+        <button className="btn btn-secondary btn-lg" onClick={stopRecording} disabled={!recording}>
+            Stop
+        </button>
+      </div>
+    </>
   )}
   {activeTab === 'record' && (audioURL || recording) && (
           <div style={{ marginTop: 24, textAlign: 'center' }}>
