@@ -412,44 +412,43 @@ function App() {
             onClick={() => setActiveTab('settings')}
           >Settings</button>
         </div>
-  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-    <button className="btn btn-outline btn-sm" onClick={() => { setToken(null); setCurrentUser(null); setShowLogin(true); }}>Logout</button>
-  </div>
-  {activeTab === 'record' && (
-    <>
-      {micDevices.length > 0 && (
-        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <label htmlFor="mic-sel" style={{ fontSize: 12, color: '#555' }}>Microphone:</label>
-          <select
-            id="mic-sel"
-            value={selectedMicId}
-            onChange={e => setSelectedMicId(e.target.value)}
-            style={{ width: 260, maxWidth: '100%' }}
-            title={micDevices.find(d => d.deviceId === selectedMicId)?.label || ''}
-          >
-            <option value="">Default</option>
-            {micDevices.map(d => (
-              <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
-            ))}
-          </select>
-          <span style={{ fontSize: 12, color: '#6b7280' }}>Format: {supportedMime || 'default'}</span>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-outline btn-sm" onClick={() => { setToken(null); setCurrentUser(null); setShowLogin(true); }}>Logout</button>
         </div>
-      )}
-      <div style={{ marginTop: 12 }} className="btn-group">
-        <button className="btn btn-lg" onClick={startRecording} disabled={recording}>
-            {recording ? 'Recording...' : 'Add Recording'}
-        </button>
-        <button className="btn btn-secondary btn-lg" onClick={stopRecording} disabled={!recording}>
-            Stop
-        </button>
-      </div>
-    </>
-  )}
-  {activeTab === 'record' && (audioURL || recording) && (
-          <div style={{ marginTop: 24, textAlign: 'center' }}>
+        {activeTab === 'record' && (
+          <>
+            {micDevices.length > 0 && (
+              <div className="mic-row" style={{ marginTop: 8 }}>
+                <label htmlFor="mic-sel">Microphone:</label>
+                <select
+                  id="mic-sel"
+                  value={selectedMicId}
+                  onChange={e => setSelectedMicId(e.target.value)}
+                  title={micDevices.find(d => d.deviceId === selectedMicId)?.label || ''}
+                >
+                  <option value="">Default</option>
+                  {micDevices.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>
+                  ))}
+                </select>
+                <span className="mic-format">Format: {supportedMime || 'default'}</span>
+              </div>
+            )}
+            <div style={{ marginTop: 12 }} className="btn-group-wide">
+              <button className="btn btn-lg" onClick={startRecording} disabled={recording}>
+                {recording ? 'Recording...' : 'Add Recording'}
+              </button>
+              <button className="btn btn-secondary btn-lg" onClick={stopRecording} disabled={!recording}>
+                Stop
+              </button>
+            </div>
+          </>
+        )}
+        {activeTab === 'record' && (audioURL || recording) && (
+          <div style={{ marginTop: 24, width: '100%' }}>
             <h3>Your Recording:</h3>
             {recording && (
-              <div style={{ margin: '12px auto 8px', maxWidth: 300, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+              <div style={{ margin: '12px auto 8px', maxWidth: 420, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#444' }}>
                   <span className="record-dot" />
                   <span>Recording...</span>
@@ -460,26 +459,26 @@ function App() {
                 <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '1px', color: '#6a82fb' }}>{elapsedTime.toFixed(1)}s</div>
               </div>
             )}
-            {!recording && audioURL && <audio controls src={audioURL} />}
+            {!recording && audioURL && <audio className="audio-player" controls src={audioURL} />}
             <div style={{ marginTop: 8 }}>
               <input
                 type="text"
                 placeholder="Enter a label for your recording"
                 value={label}
                 onChange={e => setLabel(e.target.value)}
-                style={{ padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', width: '80%' }}
+                className="field-full"
+                style={{ padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db' }}
               />
             </div>
-            <button onClick={uploadRecording} disabled={!audioURL || !label || uploading || transcribing || recording} className="btn btn-lg" style={{ marginTop: 16 }}>
+            <button onClick={uploadRecording} disabled={!audioURL || !label || uploading || transcribing || recording} className="btn btn-lg cta-full" style={{ marginTop: 16 }}>
               {transcribing ? 'Waiting for transcript…' : (uploading ? 'Uploading...' : 'Save Recording')}
             </button>
             <div style={{ marginTop: 8 }}>
               <button
                 type="button"
-                className="btn btn-outline btn-sm"
+                className="btn btn-outline btn-sm cta-full"
                 disabled={(!audioURL && !recording) || uploading}
                 onClick={discardCurrent}
-                style={{ width: '60%' }}
               >Discard</button>
             </div>
             <div style={{ marginTop: 24, textAlign: 'left' }}>
@@ -511,7 +510,7 @@ function App() {
                 onChange={e => setTranscriptText(e.target.value)}
                 placeholder={transcribing ? 'Transcribing...' : 'Transcript will appear here'}
                 disabled={transcribing}
-                style={{ width: '100%', minHeight: 150, padding: 10, borderRadius: 8, border: '1px solid #d1d5db', fontFamily: 'monospace', background: transcribing ? '#f3f4f6' : 'white', opacity: transcribing ? 0.7 : 1 }}
+                style={{ width: '100%', minHeight: 180, padding: 10, borderRadius: 8, border: '1px solid #d1d5db', fontFamily: 'monospace', background: transcribing ? '#f3f4f6' : 'white', opacity: transcribing ? 0.7 : 1 }}
               />
             </div>
           </div>
